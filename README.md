@@ -85,6 +85,31 @@ The first reference injects the living room background and the second reference 
 
 This setup reuses both reference portraits to synthesize the stylized wedding shot stored at `examples/wedding.png`.
 
+#### Layered image decomposition example
+
+The CLI also supports layered image decomposition using the [Qwen-Image-Layered](https://huggingface.co/Qwen/Qwen-Image-Layered) model, which separates an image into foreground and background layers.
+
+```bash
+./QwenImageCLI \
+  --model mzbac/Qwen-Image-Layered-8bit \
+  --layered \
+  --layered-image images/layered_input.png \
+  --layered-layers 2 \
+  --layered-resolution 640 \
+  --steps 20 \
+  --seed 42 \
+  --output outputs/layered/
+```
+
+This decomposes the input image into 2 layers (foreground and background), producing separate PNG files for each layer. The `--layered-resolution` flag accepts 640 or 1024 as resolution buckets.
+
+Layered generation flags:
+- `--layered` enables layered decomposition mode
+- `--layered-image` specifies the input image to decompose
+- `--layered-layers` sets the number of layers to generate (default: 4)
+- `--layered-resolution` sets the resolution bucket: 640 or 1024 (default: 640)
+- `--layered-cfg-normalize` enables/disables CFG normalization (default: true)
+
 Key flags:
 
 - `--prompt` accepts the same multi-condition syntax as upstream Qwen Image.
@@ -104,7 +129,15 @@ The `examples/` folder contains a few straight-from-the-CLI renders to showcase 
 | Analog film photo of an astronaut riding a horse on Mars at golden hour | Same as prompt | — | ![Astronaut](examples/astronaut.png) |
 | 根据这图1中女性和图2中的男性，生成一组结婚照，并遵循以下描述：新郎穿着红色的中式马褂，新娘穿着精致的秀禾服，头戴金色凤冠。他们并肩站立在古老的朱红色宫墙前，背景是雕花的木窗。光线明亮柔和，构图对称，氛围喜庆而庄重。 | “Using the woman from image 1 and the man from image 2, create a set of wedding photos. The groom wears a red traditional Chinese jacket, the bride wears an ornate Xiuhe dress with a golden phoenix crown. They stand side by side before an old vermilion palace wall with carved wooden windows, bright soft lighting, symmetric composition, festive yet solemn mood.” | <img src="images/person1.png" width="120"/> <img src="images/person2.png" width="120"/> | ![Wedding](examples/wedding.png) |
 | 图2中的女生在图1的沙发上 喝咖啡 | “Place the girl from image 2 on the sofa from image 1, drinking coffee.” | <img src="images/background.png" width="120"/> <img src="images/person1.png" width="120"/> | ![Character placement](examples/character_placement.png) |
-| 她双手举起，手掌朝向镜头，手指张开，做出一个俏皮的姿势 | “She raises both hands toward the camera, fingers spread, striking a playful pose.” | <img src="images/person4.png" width="120"/> | ![Pose editing](examples/pose_editing.png) |
+| 她双手举起，手掌朝向镜头，手指张开，做出一个俏皮的姿势 | "She raises both hands toward the camera, fingers spread, striking a playful pose." | <img src="images/person4.png" width="120"/> | ![Pose editing](examples/pose_editing.png) |
+
+### Layered decomposition
+
+The layered mode decomposes an input image into separate foreground/background layers:
+
+| Input | Layer 1 (background) | Layer 2 (foreground) |
+| --- | --- | --- |
+| ![Input](images/layered_input.png) | ![Layer 1](examples/layered_layer_1.png) | ![Layer 2](examples/layered_layer_2.png) |
 
 Feel free to reference these prompts to validate your environment; recreating them should produce similar compositions within minor stochastic differences.
 

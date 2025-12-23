@@ -44,13 +44,15 @@ public struct QwenFlowMatchScheduler: QwenScheduler {
   public let height: Int
   public let numInferenceSteps: Int
   public let flowMatchConfig: QwenFlowMatchConfig
+  public let mu: Float?  // Dynamic shifting parameter for layered generation
 
   public init(
     numInferenceSteps: Int,
     width: Int,
     height: Int,
     requiresSigmaShift: Bool = false,
-    flowMatchConfig: QwenFlowMatchConfig = .init()
+    flowMatchConfig: QwenFlowMatchConfig = .init(),
+    mu: Float? = nil  // Optional mu for dynamic shifting (overrides config if provided)
   ) {
     precondition(numInferenceSteps > 0, "numInferenceSteps must be positive")
     self.numInferenceSteps = numInferenceSteps
@@ -58,13 +60,15 @@ public struct QwenFlowMatchScheduler: QwenScheduler {
     self.height = height
     self.requiresSigmaShift = requiresSigmaShift
     self.flowMatchConfig = flowMatchConfig
+    self.mu = mu
 
     let sigmaValues = Self.computeSigmas(
       steps: numInferenceSteps,
       width: width,
       height: height,
       requiresSigmaShift: requiresSigmaShift,
-      flowMatchConfig: flowMatchConfig
+      flowMatchConfig: flowMatchConfig,
+      mu: mu
     )
     self.sigmas = MLXArray(sigmaValues, [sigmaValues.count])
   }
@@ -90,41 +94,47 @@ extension QwenFlowMatchScheduler {
     width: Int,
     height: Int,
     requiresSigmaShift: Bool,
-    flowMatchConfig: QwenFlowMatchConfig
+    flowMatchConfig: QwenFlowMatchConfig,
+    mu: Float? = nil
   ) -> [Float32] {
     var values: [Float32] = []
     values.reserveCapacity(steps + 1)
 
-    let start: Float32 = 1.0
-    let end: Float32 = 1.0 / Float32(steps)
+    // Match Python's linspace(1.0, 0.0, steps+1)[:-1]
+    let sigmaMax: Float32 = 1.0
+    let sigmaMin: Float32 = 0.0
 
     if steps == 1 {
-      values.append(start)
+      values.append(sigmaMax)
     } else {
-      let delta = (end - start) / Float32(steps - 1)
       for index in 0..<steps {
-        values.append(start + Float32(index) * delta)
+        let t = Float32(index) / Float32(steps)
+        let sigma = sigmaMax + t * (sigmaMin - sigmaMax)
+        values.append(sigma)
       }
     }
 
-    if requiresSigmaShift {
+    // Apply dynamic sigma shifting if mu is provided (for layered generation)
+    if let mu = mu {
+      values = applyLinearTimeShift(values, mu: mu)
+    } else if requiresSigmaShift {
       if flowMatchConfig.useDynamicShifting {
-        let mu = computeDynamicShiftMu(
+        let computedMu = computeDynamicShiftMu(
           width: width,
           height: height,
           flowMatchConfig: flowMatchConfig
         )
-        values = applyDynamicSigmaShift(values, mu: mu)
+        values = applyDynamicSigmaShift(values, mu: computedMu)
       } else {
         values = applyStaticSigmaShift(values, shift: flowMatchConfig.shift)
       }
     } else if flowMatchConfig.useDynamicShifting {
-      let mu = computeDynamicShiftMu(
+      let computedMu = computeDynamicShiftMu(
         width: width,
         height: height,
         flowMatchConfig: flowMatchConfig
       )
-      values = applyDynamicSigmaShift(values, mu: mu)
+      values = applyDynamicSigmaShift(values, mu: computedMu)
     } else if abs(flowMatchConfig.shift - 1.0) > Float.ulpOfOne {
       values = applyStaticSigmaShift(values, shift: flowMatchConfig.shift)
     }
@@ -133,6 +143,24 @@ extension QwenFlowMatchScheduler {
     return values
   }
 
+  /// Linear time shift: mu * t / (1 + (mu - 1) * t)
+  /// Used for layered generation (matches Python's _time_shift_linear function)
+  private static func applyLinearTimeShift(
+    _ sigmas: [Float32],
+    mu: Float32
+  ) -> [Float32] {
+    guard !sigmas.isEmpty else { return sigmas }
+
+    return sigmas.map { sigma in
+      guard sigma > 0 else { return sigma }
+      let numerator = mu * sigma
+      let denominator = 1.0 + (mu - 1.0) * sigma
+      guard denominator != 0 else { return sigma }
+      return numerator / denominator
+    }
+  }
+
+  /// Exponential dynamic sigma shift (original behavior)
   private static func applyDynamicSigmaShift(
     _ sigmas: [Float32],
     mu: Float32,

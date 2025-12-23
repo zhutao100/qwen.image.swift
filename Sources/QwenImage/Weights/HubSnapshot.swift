@@ -121,14 +121,28 @@ public actor HubSnapshot {
       return explicit
     }
 
-    if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
-      let directory = caches.appending(path: "qwen-image/hub")
+    // Follow HuggingFace cache convention:
+    // 1. HF_HUB_CACHE env var
+    // 2. HF_HOME env var + "/hub"
+    // 3. ~/.cache/huggingface/hub (default)
+    let env = ProcessInfo.processInfo.environment
+
+    if let hfHubCache = env["HF_HUB_CACHE"], !hfHubCache.isEmpty {
+      let directory = URL(fileURLWithPath: hfHubCache)
       try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
       return directory
     }
 
-    let fallback = fileManager.temporaryDirectory.appending(path: "qwen-image/hub")
-    try fileManager.createDirectory(at: fallback, withIntermediateDirectories: true, attributes: nil)
-    return fallback
+    if let hfHome = env["HF_HOME"], !hfHome.isEmpty {
+      let directory = URL(fileURLWithPath: hfHome).appending(path: "hub")
+      try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+      return directory
+    }
+
+    // Default: ~/.cache/huggingface/hub (standard HuggingFace location)
+    let home = fileManager.homeDirectoryForCurrentUser
+    let directory = home.appending(path: ".cache/huggingface/hub")
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+    return directory
   }
 }

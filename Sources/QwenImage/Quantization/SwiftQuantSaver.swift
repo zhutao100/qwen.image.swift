@@ -8,29 +8,10 @@ public enum SwiftQuantSaverError: Error {
 }
 
 public struct SwiftQuantSaver {
-  private static let allowedSuffixesTransformer: [String] = [
-    ".img_mlp.net.0.proj",
-    ".img_mlp.net.2",
-    ".txt_mlp.net.0.proj",
-    ".txt_mlp.net.2",
-    "img_in",
-    "txt_in",
-    "time_text_embed.timestep_embedder.linear_1",
-    "time_text_embed.timestep_embedder.linear_2",
-    "norm_out.linear",
-    "proj_out"
-  ]
-
-  private static let allowedSuffixesTextEncoder: [String] = [
-    ".mlp.gate_proj",
-    ".mlp.up_proj",
-    ".mlp.down_proj"
-  ]
-
-  private static func isAllowed(base: String, component: String) -> Bool {
-    let suffixes = (component == "text_encoder") ? allowedSuffixesTextEncoder : allowedSuffixesTransformer
-    for s in suffixes where base.hasSuffix(s) { return true }
-    return false
+  private static func isAllowed(base: String, allowedLayerMap: [String: Set<String>]?, component: String) -> Bool {
+    guard let allowedLayerMap else { return true }
+    guard let allowed = allowedLayerMap[component] else { return false }
+    return allowed.contains(base)
   }
 
   public static func quantizeAndSave(
@@ -60,6 +41,7 @@ public struct SwiftQuantSaver {
           record: &layers
         )
         _ = fileName
+        try copyComponentMetadata(from: src, to: dst)
       case "text_encoder":
         let src = sourceRoot.appending(path: "text_encoder")
         let dst = outputRoot.appending(path: "text_encoder")
@@ -74,6 +56,7 @@ public struct SwiftQuantSaver {
           record: &layers
         )
         _ = fileName
+        try copyComponentMetadata(from: src, to: dst)
       default:
         continue
       }
@@ -100,6 +83,23 @@ public struct SwiftQuantSaver {
     return files.sorted { $0.path < $1.path }
   }
 
+  /// Copy non-safetensor metadata files (e.g., config.json) from the source component directory.
+  private static func copyComponentMetadata(from src: URL, to dst: URL) throws {
+    let fm = FileManager.default
+    guard let entries = try? fm.contentsOfDirectory(at: src, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+      return
+    }
+    for entry in entries {
+      guard entry.pathExtension.lowercased() != "safetensors" else { continue }
+      let name = entry.lastPathComponent
+      // Skip manifest from source snapshot
+      if name == "quantization.json" { continue }
+      let dstPath = dst.appending(path: name)
+      try? fm.removeItem(at: dstPath)
+      try fm.copyItem(at: entry, to: dstPath)
+    }
+  }
+
   @discardableResult
   private static func quantizeAndSaveComponent(
     componentName: String,
@@ -119,19 +119,13 @@ public struct SwiftQuantSaver {
     guard supportedGroupSizes.contains(group) else { return baseFileName }
 
     var quantizedBases = Set<String>()
-    let strict = (allowedLayerMap != nil)
-    let allowedSet = allowedLayerMap?[componentName]
     for (key, tensor) in merged {
       guard key.hasSuffix(".weight") else { continue }
       guard tensor.ndim == 2 else { continue }
       let outDim = tensor.dim(0)
       let inDim = tensor.dim(1)
       let base = String(key.dropLast(".weight".count))
-      if strict {
-        guard let allowed = allowedSet, allowed.contains(base) else { continue }
-      } else {
-        guard isAllowed(base: base, component: componentName) else { continue }
-      }
+      guard isAllowed(base: base, allowedLayerMap: allowedLayerMap, component: componentName) else { continue }
       guard inDim % group == 0 else { continue }
       var f = tensor
       if f.dtype != .float32 && f.dtype != .bfloat16 && f.dtype != .float16 { continue }
@@ -197,7 +191,6 @@ public struct SwiftQuantSaver {
   ) throws {
     var payload: [String: Any] = [:]
     payload["version"] = 1
-    payload["snapshot"] = sourceRoot.path
     payload["group_size"] = spec.groupSize
     payload["bits"] = spec.bits
     payload["mode"] = (spec.mode == .mxfp4 ? "mxfp4" : "affine")

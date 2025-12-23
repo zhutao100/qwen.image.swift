@@ -390,6 +390,257 @@ public struct WeightsMapping {
     }
   }
 
+  /// Weight mapping for the layered transformer (QwenLayeredTransformerV2)
+  /// Uses the same safetensors keys but maps to the V2 module structure
+  public static func layeredTransformerParameters(
+    from tensors: [String: MLXArray],
+    configuration: QwenLayeredTransformerConfiguration,
+    dtype: DType? = nil,
+    quantization: QwenQuantizationPlan? = nil
+  ) throws -> ModuleParameters {
+    var source = tensors
+    var flat: [String: MLXArray] = [:]
+
+    // Input projections
+    try assignLinear(
+      flat: &flat,
+      source: &source,
+      modulePath: "img_in",
+      tensorBase: "img_in",
+      hasBias: true,
+      dtype: dtype,
+      quantization: quantization
+    )
+    try assignLinear(
+      flat: &flat,
+      source: &source,
+      modulePath: "txt_in",
+      tensorBase: "txt_in",
+      hasBias: true,
+      dtype: dtype,
+      quantization: quantization
+    )
+
+    // Text norm
+    if source["txt_norm.weight"] != nil {
+      flat["txt_norm.weight"] = try fetch("txt_norm.weight", from: &source, dtype: dtype)
+    }
+
+    // Timestep embedding
+    try assignLinear(
+      flat: &flat,
+      source: &source,
+      modulePath: "time_text_embed.timestep_embedder.linear_1",
+      tensorBase: "time_text_embed.timestep_embedder.linear_1",
+      hasBias: true,
+      dtype: dtype,
+      quantization: quantization
+    )
+    try assignLinear(
+      flat: &flat,
+      source: &source,
+      modulePath: "time_text_embed.timestep_embedder.linear_2",
+      tensorBase: "time_text_embed.timestep_embedder.linear_2",
+      hasBias: true,
+      dtype: dtype,
+      quantization: quantization
+    )
+
+    // Additional conditioning embedding (if present)
+    if source["time_text_embed.addition_t_embedding.weight"] != nil {
+      flat["time_text_embed.addition_t_embedding.weight"] = try fetch(
+        "time_text_embed.addition_t_embedding.weight", from: &source, dtype: dtype)
+    }
+
+    // Output projection
+    try assignLinear(
+      flat: &flat,
+      source: &source,
+      modulePath: "norm_out.linear",
+      tensorBase: "norm_out.linear",
+      hasBias: true,
+      dtype: dtype,
+      quantization: quantization
+    )
+    try assignLinear(
+      flat: &flat,
+      source: &source,
+      modulePath: "proj_out",
+      tensorBase: "proj_out",
+      hasBias: true,
+      dtype: dtype,
+      quantization: quantization
+    )
+
+    for blockIndex in 0..<configuration.numLayers {
+      let prefix = "transformer_blocks.\(blockIndex)"
+      let modulePrefix = "transformer_blocks.\(blockIndex)"
+
+      // Modulation MLPs (SiLU + Linear)
+      // HuggingFace uses img_mod.1 for the Linear layer
+      // V2 module uses @ModuleInfo(key: "lin")
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).img_mod.lin",
+        tensorBase: "\(prefix).img_mod.1",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).txt_mod.lin",
+        tensorBase: "\(prefix).txt_mod.1",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+
+      // Joint attention
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.to_q",
+        tensorBase: "\(prefix).attn.to_q",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.to_k",
+        tensorBase: "\(prefix).attn.to_k",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.to_v",
+        tensorBase: "\(prefix).attn.to_v",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.add_q_proj",
+        tensorBase: "\(prefix).attn.add_q_proj",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.add_k_proj",
+        tensorBase: "\(prefix).attn.add_k_proj",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.add_v_proj",
+        tensorBase: "\(prefix).attn.add_v_proj",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+
+      // RMS norms for Q/K
+      flat["\(modulePrefix).attn.norm_q.weight"] = try fetch(
+        "\(prefix).attn.norm_q.weight",
+        from: &source,
+        dtype: dtype
+      )
+      flat["\(modulePrefix).attn.norm_k.weight"] = try fetch(
+        "\(prefix).attn.norm_k.weight",
+        from: &source,
+        dtype: dtype
+      )
+      flat["\(modulePrefix).attn.norm_added_q.weight"] = try fetch(
+        "\(prefix).attn.norm_added_q.weight",
+        from: &source,
+        dtype: dtype
+      )
+      flat["\(modulePrefix).attn.norm_added_k.weight"] = try fetch(
+        "\(prefix).attn.norm_added_k.weight",
+        from: &source,
+        dtype: dtype
+      )
+
+      // Output projections
+      // V2 attention uses @ModuleInfo(key: "to_out") which is an array
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.to_out.0",
+        tensorBase: "\(prefix).attn.to_out.0",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).attn.to_add_out",
+        tensorBase: "\(prefix).attn.to_add_out",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+
+      // Feed-forward networks
+      // V2 uses @ModuleInfo(key: "linear1") and @ModuleInfo(key: "linear2")
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).img_mlp.linear1",
+        tensorBase: "\(prefix).img_mlp.net.0.proj",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).img_mlp.linear2",
+        tensorBase: "\(prefix).img_mlp.net.2",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).txt_mlp.linear1",
+        tensorBase: "\(prefix).txt_mlp.net.0.proj",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+      try assignLinear(
+        flat: &flat,
+        source: &source,
+        modulePath: "\(modulePrefix).txt_mlp.linear2",
+        tensorBase: "\(prefix).txt_mlp.net.2",
+        hasBias: true,
+        dtype: dtype,
+        quantization: quantization
+      )
+    }
+
+    return ModuleParameters.unflattened(flat)
+  }
+
   public static func visionPatchEmbedParameters(
     from tensors: [String: MLXArray],
     dtype: DType? = nil,

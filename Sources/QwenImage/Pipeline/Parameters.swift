@@ -146,3 +146,58 @@ public struct ProgressInfo {
     self.preview = preview
   }
 }
+
+// MARK: - Layered Generation Parameters
+
+/// Parameters for layered image decomposition.
+/// Used with `generateLayered()` to decompose an image into multiple layers.
+public struct LayeredGenerationParameters {
+  /// Number of layers to generate (excludes the original image layer)
+  public var layers: Int
+
+  /// Resolution bucket: 640 or 1024
+  public var resolution: Int
+
+  /// Number of inference steps
+  public var numInferenceSteps: Int
+
+  /// True CFG scale (only applied when negativePrompt is set)
+  public var trueCFGScale: Float
+
+  /// Whether to normalize CFG output
+  public var cfgNormalize: Bool
+
+  /// Optional text prompt for generation
+  public var prompt: String?
+
+  /// Optional negative prompt (enables True CFG)
+  public var negativePrompt: String?
+
+  /// Random seed for reproducibility
+  public var seed: UInt64?
+
+  public init(
+    layers: Int = 4,
+    resolution: Int = 640,
+    numInferenceSteps: Int = 50,
+    trueCFGScale: Float = 4.0,
+    cfgNormalize: Bool = true,
+    prompt: String? = nil,
+    negativePrompt: String? = nil,
+    seed: UInt64? = nil
+  ) {
+    precondition(layers > 0, "layers must be positive")
+    precondition(resolution == 640 || resolution == 1024, "resolution must be 640 or 1024")
+    precondition(numInferenceSteps > 0, "numInferenceSteps must be positive")
+    precondition(trueCFGScale >= 1.0, "trueCFGScale must be >= 1.0")
+
+    self.layers = layers
+    self.resolution = resolution
+    self.numInferenceSteps = numInferenceSteps
+    self.trueCFGScale = trueCFGScale
+    self.cfgNormalize = cfgNormalize
+    self.prompt = prompt
+    self.negativePrompt = negativePrompt
+    self.seed = seed
+  }
+}

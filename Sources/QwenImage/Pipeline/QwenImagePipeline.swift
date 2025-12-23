@@ -475,7 +475,7 @@ public final class QwenImagePipeline {
     guard latents.dim(1) == 16 else {
       throw PipelineError.invalidTensorShape("Latent tensor must have 16 channels.")
     }
-    let decoded = vae.decode(latents.asType(preferredWeightDType() ?? latents.dtype))
+    let decoded = vae.decodeWithDenormalization(latents.asType(preferredWeightDType() ?? latents.dtype))
     return denormalizeFromDecoder(decoded)
   }
 

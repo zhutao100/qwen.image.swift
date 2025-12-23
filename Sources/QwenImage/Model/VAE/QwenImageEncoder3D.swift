@@ -20,8 +20,9 @@ final class QwenImageEncoder3D: Module {
 
   override init() {
     let channels = Self.stageChannelMultipliers.map { $0 * Self.baseChannels }
+    // Input channels is 4 for RGBA images (matches Qwen-Image-Layered VAE config)
     self._convIn.wrappedValue = QwenImageCausalConv3D(
-      inputChannels: 3,
+      inputChannels: 4,
       outputChannels: channels[0],
       kernelSize: (3, 3, 3),
       stride: (1, 1, 1),

@@ -129,6 +129,13 @@ struct QwenImageCLIEntry {
     var quantizeScriptPath: String? = nil
     var quantizeSnapshotSwiftOut: String?
 
+    // Layered generation mode
+    var isLayeredMode = false
+    var layeredImagePath: String?
+    var layeredLayers = 4
+    var layeredResolution = 640
+    var layeredCFGNormalize = true
+
     let args = CommandLine.arguments.dropFirst()
     var iterator = args.makeIterator()
     while let argument = iterator.next() {
@@ -196,8 +203,8 @@ struct QwenImageCLIEntry {
         trueCFGScale = scale
       case "--quant-bits":
         let value = nextValue(for: argument, iterator: &iterator)
-        guard let bits = Int(value), bits == 4 || bits == 8 else {
-          fail("Expected 4 or 8 after --quant-bits")
+        guard let bits = Int(value), [2, 4, 6, 8].contains(bits) else {
+          fail("Expected 2, 4, 6, or 8 after --quant-bits")
         }
         quantBits = bits
       case "--quant-group-size":
@@ -226,8 +233,8 @@ struct QwenImageCLIEntry {
         quantAttnBits = quantAttnBits ?? quantBits ?? 8
       case "--quant-attn-bits":
         let value = nextValue(for: argument, iterator: &iterator)
-        guard let bits = Int(value), bits == 4 || bits == 8 else {
-          fail("Expected 4 or 8 after --quant-attn-bits")
+        guard let bits = Int(value), [2, 4, 6, 8].contains(bits) else {
+          fail("Expected 2, 4, 6, or 8 after --quant-attn-bits")
         }
         quantAttnBits = bits
       case "--quant-attn-group-size":
@@ -257,6 +264,26 @@ struct QwenImageCLIEntry {
         pythonCmd = nextValue(for: argument, iterator: &iterator)
       case "--quantize-script":
         quantizeScriptPath = nextValue(for: argument, iterator: &iterator)
+      case "--layered":
+        isLayeredMode = true
+      case "--layered-image":
+        layeredImagePath = nextValue(for: argument, iterator: &iterator)
+        isLayeredMode = true
+      case "--layered-layers":
+        let value = nextValue(for: argument, iterator: &iterator)
+        guard let intValue = Int(value), intValue > 0 else {
+          fail("Expected positive integer after --layered-layers")
+        }
+        layeredLayers = intValue
+      case "--layered-resolution":
+        let value = nextValue(for: argument, iterator: &iterator)
+        guard let intValue = Int(value), intValue == 640 || intValue == 1024 else {
+          fail("Expected 640 or 1024 after --layered-resolution")
+        }
+        layeredResolution = intValue
+      case "--layered-cfg-normalize":
+        let value = nextValue(for: argument, iterator: &iterator).lowercased()
+        layeredCFGNormalize = value == "true" || value == "1" || value == "yes"
       case "--help", "-h":
         printUsage()
         return
@@ -270,6 +297,41 @@ struct QwenImageCLIEntry {
       let group = quantAttnGroupSize ?? quantGroupSize
       let mode = quantAttnMode ?? quantMode
       quantAttnSpecOverride = QwenQuantizationSpec(groupSize: group, bits: bits, mode: mode)
+    }
+
+    // Handle layered generation mode
+    if isLayeredMode {
+      guard let imagePath = layeredImagePath else {
+        fail("Layered mode requires --layered-image PATH")
+      }
+      let env = ProcessInfo.processInfo.environment
+      let hfHomePath = env["HF_HOME"].map { NSString(string: $0).expandingTildeInPath }
+      let cacheOverridePath: String? = hfHomePath.map { $0 + "/hub" }
+
+      let snapshotRoot = try resolveSnapshot(
+        model: modelArg ?? "Qwen/Qwen-Image-Layered",
+        revision: revision,
+        cacheDirectory: cacheOverridePath,
+        hfToken: nil,
+        offlineMode: false,
+        useBackgroundSession: false
+      )
+
+      try runLayeredGeneration(
+        imagePath: imagePath,
+        snapshotRoot: snapshotRoot,
+        outputPath: outputPath,
+        layers: layeredLayers,
+        resolution: layeredResolution,
+        steps: steps,
+        prompt: prompt,
+        negativePrompt: negativePrompt,
+        trueCFGScale: trueCFGScale,
+        cfgNormalize: layeredCFGNormalize,
+        seed: seed,
+        loraPath: loraArg
+      )
+      return
     }
 
     if let outDir = quantizeSnapshotSwiftOut {
@@ -695,7 +757,7 @@ struct QwenImageCLIEntry {
   private static func printUsage() {
     let usage = """
     qwen-image-cli
-      --prompt, -p            Prompt text (required)
+      --prompt, -p            Prompt text (required for text-to-image)
       --negative-prompt, --np Negative prompt (optional)
       --steps, -s             Number of diffusion steps (default: 30)
       --guidance, -g          Guidance scale (default: 4.0)
@@ -707,24 +769,36 @@ struct QwenImageCLIEntry {
       --lora                  Optional LoRA safetensors path or HF repo ID (e.g. Osrivers/Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors)
       --revision              Snapshot revision/tag/commit (used with HF repo IDs; default: main)
       --output, -o            Output PNG path (default: qwen-image.png)
-      
+
       Output format is inferred from extension: .png, .bmp, .tiff, .jpg
       Use .bmp or .tiff for faster saves during benchmarking.
-      
+
+      Layered image decomposition mode:
+      --layered                   Enable layered decomposition mode
+      --layered-image PATH        Input image path for decomposition (required for layered mode)
+      --layered-layers N          Number of layers to generate (default: 4)
+      --layered-resolution N      Resolution bucket: 640 or 1024 (default: 640)
+      --layered-cfg-normalize     Enable/disable CFG normalization (true/false; default: true)
+      Use --model to specify a custom layered model (default: Qwen/Qwen-Image-Layered)
+
+      Example:
+      qwen-image-cli --layered-image input.png --layered-layers 2 \\
+        --layered-resolution 640 --steps 20 --seed 42 -o ./layers/output.png
+
       Quantize + save snapshot:
       --quantize-model DIR               Write a pre-packed snapshot to DIR (Swift-side; quantizes all Linear layers that pass group-size checks)
       --quantize-components LIST         Comma-separated components to quantize (default: transformer,text_encoder)
-      --quant-bits                       Bit-width for snapshot weights (4 or 8; default: 8)
+      --quant-bits                       Bit-width for snapshot weights (2, 4, 6, or 8; default: 8)
       --quant-group-size                 Group size for snapshot weights (default: 64)
       --quant-mode                       Quantization mode for snapshot weights (affine or mxfp4; default: affine)
-      
+
       Edit mode:
       Pass --reference-image to enable edit mode (repeat to pass two images)
-      
+
       Environment:
       QWEN_IMAGE_LOG_LEVEL   Minimum log level (debug, info, warning, error; default: info)
       QWEN_IMAGE_LOG_FILE    Optional path to a log file; if unset, logs are written to stderr only
-      
+
       --help, -h              Show this help
     """
     if let data = (usage + "\n").data(using: .utf8) {
@@ -736,6 +810,209 @@ struct QwenImageCLIEntry {
     logger.error("\(message)")
     exit(2)
   }
+
+  private static func runLayeredGeneration(
+    imagePath: String,
+    snapshotRoot: URL,
+    outputPath: String,
+    layers: Int,
+    resolution: Int,
+    steps: Int,
+    prompt: String?,
+    negativePrompt: String?,
+    trueCFGScale: Float?,
+    cfgNormalize: Bool,
+    seed: UInt64?,
+    loraPath: String?
+  ) throws {
+#if canImport(CoreGraphics)
+    // Set GPU cache limit higher for layered generation
+    let cacheLimitBytes = 64 * 1024 * 1024 * 1024
+    MLX.GPU.set(cacheLimit: cacheLimitBytes)
+    logger.info("Set MLX GPU cache limit to \(ByteCountFormatter.string(fromByteCount: Int64(cacheLimitBytes), countStyle: .memory)) for layered generation")
+
+    logger.info("Loading layered pipeline from \(snapshotRoot.path)")
+    let pipeline = try blockingAwait {
+      try await QwenLayeredPipeline.load(from: snapshotRoot)
+    }
+
+    // Apply LoRA if provided
+    if let loraPath = loraPath {
+      let loraURL = try resolveLoraSafetensors(
+        lora: loraPath,
+        cacheDirectory: nil,
+        hfToken: nil,
+        offlineMode: false,
+        useBackgroundSession: false
+      )
+      logger.info("Applying LoRA from \(loraURL.path)")
+      try pipeline.applyLora(from: loraURL, scale: 1.0)
+    }
+
+    // Load input image
+    logger.info("Loading input image from \(imagePath)")
+    let cgImage = loadCGImage(at: imagePath)
+    let inputArray = cgImageToMLXArray(cgImage)
+
+    // Create parameters
+    let parameters = LayeredGenerationParameters(
+      layers: layers,
+      resolution: resolution,
+      numInferenceSteps: steps,
+      trueCFGScale: trueCFGScale ?? 4.0,
+      cfgNormalize: cfgNormalize,
+      prompt: prompt,
+      negativePrompt: negativePrompt,
+      seed: seed
+    )
+
+    logger.info("Generating \(layers) layers at \(resolution)x\(resolution) with \(steps) steps")
+
+    // Generate layers
+    let layerImages = try pipeline.generate(
+      image: inputArray,
+      parameters: parameters
+    ) { _, _, _ in
+      // Progress callback - no logging due to lazy evaluation
+    }
+
+    // Save output images
+    let outputURL = URL(fileURLWithPath: outputPath).standardizedFileURL
+    let outputDir = outputURL.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+
+    let baseName = outputURL.deletingPathExtension().lastPathComponent
+    let ext = outputURL.pathExtension.isEmpty ? "png" : outputURL.pathExtension
+
+    for (i, layerArray) in layerImages.enumerated() {
+      let layerIndex = i + 1
+      let layerFileName = "\(baseName)_layer_\(layerIndex).\(ext)"
+      let layerURL = outputDir.appendingPathComponent(layerFileName)
+
+      let image = try mlxArrayToImage(layerArray)
+      try save(image: image, to: layerURL)
+      logger.info("Saved layer \(layerIndex) to \(layerURL.path)")
+    }
+
+    logger.info("Layered generation complete. Generated \(layerImages.count) layers.")
+#else
+    fail("Layered generation requires CoreGraphics support.")
+#endif
+  }
+
+#if canImport(CoreGraphics)
+  private static func cgImageToMLXArray(_ cgImage: CGImage) -> MLXArray {
+    let width = cgImage.width
+    let height = cgImage.height
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    let totalBytes = height * bytesPerRow
+
+    var pixelData = [UInt8](repeating: 0, count: totalBytes)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+
+    guard let context = CGContext(
+      data: &pixelData,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: bytesPerRow,
+      space: colorSpace,
+      bitmapInfo: bitmapInfo.rawValue
+    ) else {
+      fatalError("Failed to create CGContext for image conversion")
+    }
+
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    // Convert to float and normalize to [-1, 1] (matching Python's VaeImageProcessor)
+    // Output RGBA (4 channels) - required for layered VAE which expects 4 input channels
+    var floatData = [Float](repeating: 0, count: width * height * 4)
+    for y in 0..<height {
+      for x in 0..<width {
+        let srcIdx = y * bytesPerRow + x * bytesPerPixel
+        let dstIdx = y * width + x
+        // Normalize from [0, 255] to [-1, 1]: (x / 255.0) * 2 - 1 = x / 127.5 - 1
+        floatData[dstIdx] = Float(pixelData[srcIdx]) / 127.5 - 1.0  // R
+        floatData[width * height + dstIdx] = Float(pixelData[srcIdx + 1]) / 127.5 - 1.0  // G
+        floatData[2 * width * height + dstIdx] = Float(pixelData[srcIdx + 2]) / 127.5 - 1.0  // B
+        floatData[3 * width * height + dstIdx] = Float(pixelData[srcIdx + 3]) / 127.5 - 1.0  // A
+      }
+    }
+
+    // Create MLXArray with shape [1, 4, H, W] (RGBA)
+    let array = MLXArray(floatData, [1, 4, height, width])
+    return array.asType(.bfloat16)
+  }
+
+  private static func mlxArrayToImage(_ array: MLXArray) -> PipelineImage {
+    // Array is expected to be [C, H, W] or [1, C, H, W] with values in [-1, 1]
+    var pixels = array
+    if pixels.ndim == 4 {
+      pixels = pixels.squeezed(axis: 0)
+    }
+
+    // Denormalize from [-1, 1] to [0, 1], then clamp and convert to uint8
+    // Formula: (x * 0.5 + 0.5).clamp(0, 1) * 255
+    pixels = pixels * 0.5 + 0.5
+    pixels = MLX.clip(pixels, min: 0, max: 1)
+    pixels = (pixels * 255).asType(.uint8)
+    MLX.eval(pixels)
+
+    let channels = pixels.dim(0)
+    let height = pixels.dim(1)
+    let width = pixels.dim(2)
+
+    // Transpose from [C, H, W] to [H, W, C]
+    pixels = pixels.transposed(1, 2, 0)
+    MLX.eval(pixels)
+
+    // Get raw bytes
+    let flatArray = pixels.reshaped([-1])
+    let count = Int(flatArray.size)
+    var byteData = [UInt8](repeating: 0, count: count)
+    flatArray.asData().withUnsafeBytes { ptr in
+      _ = ptr.copyBytes(to: UnsafeMutableBufferPointer(start: &byteData, count: count))
+    }
+
+    // Create CGImage
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo: CGBitmapInfo
+    if channels == 4 {
+      bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+    } else {
+      bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+    }
+
+    let bytesPerRow = width * channels
+    guard let provider = CGDataProvider(data: Data(byteData) as CFData) else {
+      fatalError("Failed to create CGDataProvider")
+    }
+
+    guard let cgImage = CGImage(
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bitsPerPixel: 8 * channels,
+      bytesPerRow: bytesPerRow,
+      space: colorSpace,
+      bitmapInfo: bitmapInfo,
+      provider: provider,
+      decode: nil,
+      shouldInterpolate: false,
+      intent: .defaultIntent
+    ) else {
+      fatalError("Failed to create CGImage from pixel data")
+    }
+
+#if canImport(AppKit)
+    return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
+#elseif canImport(UIKit)
+    return UIImage(cgImage: cgImage)
+#endif
+  }
+#endif
 
   private static func collectLinearLayerRegistry(
     modelPath: String

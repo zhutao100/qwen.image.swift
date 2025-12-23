@@ -48,7 +48,27 @@ public final class QwenVAE: Module {
     super.init()
   }
 
+  /// Decode latents to image.
+  /// Note: The caller should denormalize latents (latent * std + mean) before calling this method.
+  /// This matches Python's VAE._decode() behavior where denormalization is done by the pipeline.
   public func decode(_ latents: MLXArray) -> MLXArray {
+    let batch = latents.dim(0)
+    let channels = latents.dim(1)
+    let height = latents.dim(2)
+    let width = latents.dim(3)
+
+    var hidden = latents
+    hidden = hidden.reshaped(batch, channels, 1, height, width)
+    // Note: Denormalization (latent * std + mean) is done by the pipeline before calling decode,
+    // matching Python behavior where VAE._decode() does not apply denormalization
+    hidden = postQuantConv(hidden)
+    hidden = decoder(hidden)
+    return hidden[0..., 0..., 0, 0..., 0...]
+  }
+
+  /// Decode latents with denormalization included (for backward compatibility).
+  /// Use this for existing pipelines that expect the old behavior.
+  public func decodeWithDenormalization(_ latents: MLXArray) -> MLXArray {
     let batch = latents.dim(0)
     let channels = latents.dim(1)
     let height = latents.dim(2)
@@ -67,7 +87,20 @@ public final class QwenVAE: Module {
     return result.latents
   }
 
+  /// Encode images and return normalized latents (for backward compatibility with existing pipelines).
   public func encodeWithIntermediates(_ images: MLXArray) -> (latents: MLXArray, encoderHidden: MLXArray, quantHidden: MLXArray) {
+    let (rawLatents, encoderHidden, quantHidden) = encodeRaw(images)
+
+    let mean = Self.latentsMean[0..., 0..., 0, 0..., 0...].asType(rawLatents.dtype)
+    let std = Self.latentsStd[0..., 0..., 0, 0..., 0...].asType(rawLatents.dtype)
+
+    let normalized = (rawLatents - mean) / std
+    return (normalized, encoderHidden, quantHidden)
+  }
+
+  /// Encode images and return raw (unnormalized) latents.
+  /// Use this for pipelines that handle normalization themselves (like layered generation).
+  public func encodeRaw(_ images: MLXArray) -> (latents: MLXArray, encoderHidden: MLXArray, quantHidden: MLXArray) {
     precondition(images.ndim == 4, "Expected input in NCHW format")
     let batch = images.dim(0)
     let channels = images.dim(1)
@@ -79,12 +112,48 @@ public final class QwenVAE: Module {
     let encoderHidden = encoder(reshaped)
     let quantHidden = quantConv(encoderHidden)
 
-    var selected = quantHidden[0..., 0..<16, 0, 0..., 0...]
+    // Return raw latent (first 16 channels) - normalization is done by the pipeline
+    let selected = quantHidden[0..., 0..<16, 0, 0..., 0...]
+    return (selected, encoderHidden, quantHidden)
+  }
 
-    let mean = Self.latentsMean[0..., 0..., 0, 0..., 0...].asType(quantHidden.dtype)
-    let std = Self.latentsStd[0..., 0..., 0, 0..., 0...].asType(quantHidden.dtype)
+  /// Denormalize a latent array for decoding.
+  public static func denormalizeLatent(_ latent: MLXArray) -> MLXArray {
+    let mean = latentsMean.asType(latent.dtype)
+    let std = latentsStd.asType(latent.dtype)
 
-    let normalized = (selected - mean) / std
-    return (normalized, encoderHidden, quantHidden)
+    if latent.ndim == 4 {
+      // [B, C, H, W] -> use squeezed mean/std [1, 16, 1, 1]
+      let mean4d = mean[0..., 0..., 0, 0..., 0...]
+      let std4d = std[0..., 0..., 0, 0..., 0...]
+      return latent * std4d + mean4d
+    } else if latent.ndim == 5 {
+      // For layered generation: [B, L, C, H, W] - reshape mean/std to [1, 1, 16, 1, 1]
+      // Note: mean/std are stored as [1, 16, 1, 1, 1] for [B, C, F, H, W] format
+      // So we need to transpose to match [B, L, C, H, W] layout
+      let mean5d = mean.transposed(0, 2, 1, 3, 4)  // [1, 16, 1, 1, 1] -> [1, 1, 16, 1, 1]
+      let std5d = std.transposed(0, 2, 1, 3, 4)    // [1, 16, 1, 1, 1] -> [1, 1, 16, 1, 1]
+      return latent * std5d + mean5d
+    } else {
+      fatalError("Expected 4D or 5D latent, got \(latent.ndim)D")
+    }
+  }
+
+  /// Normalize a latent array after encoding.
+  public static func normalizeLatent(_ latent: MLXArray) -> MLXArray {
+    let mean = latentsMean.asType(latent.dtype)
+    let std = latentsStd.asType(latent.dtype)
+
+    if latent.ndim == 4 {
+      // [B, C, H, W] -> use squeezed mean/std
+      let mean4d = mean[0..., 0..., 0, 0..., 0...]
+      let std4d = std[0..., 0..., 0, 0..., 0...]
+      return (latent - mean4d) / std4d
+    } else if latent.ndim == 5 {
+      // [B, L, C, H, W] or [B, C, F, H, W] - use full mean/std
+      return (latent - mean) / std
+    } else {
+      fatalError("Expected 4D or 5D latent, got \(latent.ndim)D")
+    }
   }
 }

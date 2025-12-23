@@ -394,7 +394,7 @@ public struct QwenWeightsLoader {
     )
   }
 
-  private func applyQuantization(
+  func applyQuantization(
     plan: QwenQuantizationPlan?,
     to model: Module,
     availableKeys: Set<String>,
@@ -461,6 +461,17 @@ public struct QwenWeightsLoader {
     // Modulation linears from AdaLayerNorm
     name = name.replacingOccurrences(of: ".img_norm1.mod_linear", with: ".img_mod.1")
     name = name.replacingOccurrences(of: ".txt_norm1.mod_linear", with: ".txt_mod.1")
+    return name
+  }
+
+  static func layeredTransformerTensorName(_ path: String) -> String {
+    var name = path
+    name = name.replacingOccurrences(of: ".img_mlp.linear1", with: ".img_mlp.net.0.proj")
+    name = name.replacingOccurrences(of: ".img_mlp.linear2", with: ".img_mlp.net.2")
+    name = name.replacingOccurrences(of: ".txt_mlp.linear1", with: ".txt_mlp.net.0.proj")
+    name = name.replacingOccurrences(of: ".txt_mlp.linear2", with: ".txt_mlp.net.2")
+    name = name.replacingOccurrences(of: ".img_mod.lin", with: ".img_mod.1")
+    name = name.replacingOccurrences(of: ".txt_mod.lin", with: ".txt_mod.1")
     return name
   }
 }
