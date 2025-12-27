@@ -760,7 +760,7 @@ struct QwenImageCLIEntry {
       --width, -W             Image width (default: 1024)
       --height, -H            Image height (default: 1024)
       --seed                  Random seed (optional)
-      --model                 HF repo ID (e.g. Qwen/Qwen-Image-Edit-2509) or local snapshot path
+      --model                 HF repo ID (e.g. Qwen/Qwen-Image-Edit-2511) or local snapshot path
       --lora                  Optional LoRA safetensors path, HF repo ID, or HF file URL (e.g. Osrivers/Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors or repo:file.safetensors)
       --revision              Snapshot revision/tag/commit (used with HF repo IDs; default: main)
       --output, -o            Output PNG path (default: qwen-image.png)

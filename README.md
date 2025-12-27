@@ -26,11 +26,11 @@ chmod +x QwenImageCLI
 
 ```bash
 ./QwenImageCLI \
-  --model mzbac/Qwen-Image-Edit-2509-8bit \
+  --model mzbac/Qwen-Image-Edit-2511-8bit \
   --true-cfg-scale 1.0 \
   --guidance 1.0 \
-  --steps 8 \
-  --lora Osrivers/Qwen-Image-Edit-Lightning-8steps-V1.0.safetensors \
+  --steps 4 \
+  --lora lightx2v/Qwen-Image-Edit-2511-Lightning:Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
   --prompt "Analog film photo of an astronaut riding a horse on Mars at golden hour" \
   --seed 42 \
   --width 512 \
@@ -42,11 +42,11 @@ chmod +x QwenImageCLI
 
 ```bash
 ./QwenImageCLI \
-  --model mzbac/Qwen-Image-Edit-2509-8bit \
+  --model mzbac/Qwen-Image-Edit-2511-8bit \
   --true-cfg-scale 1.0 \
   --guidance 1.0 \
-  --steps 8 \
-  --lora Osrivers/Qwen-Image-Edit-Lightning-8steps-V1.0.safetensors \
+  --steps 4 \
+  --lora lightx2v/Qwen-Image-Edit-2511-Lightning:Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
   --reference-image images/person4.png \
   --prompt "她双手举起，手掌朝向镜头，手指张开，做出一个俏皮的姿势"
 ```
@@ -57,11 +57,11 @@ The reference photo at `images/person4.png` plus the LoRA lightning adapter abov
 
 ```bash
 ./QwenImageCLI \
-  --model mzbac/Qwen-Image-Edit-2509-8bit \
+  --model mzbac/Qwen-Image-Edit-2511-8bit \
   --true-cfg-scale 1.0 \
   --guidance 1.0 \
-  --steps 8 \
-  --lora Osrivers/Qwen-Image-Edit-Lightning-8steps-V1.0.safetensors \
+  --steps 4 \
+  --lora lightx2v/Qwen-Image-Edit-2511-Lightning:Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
   --reference-image images/background.png \
   --reference-image images/person1.png \
   --prompt "图2中的女生在图1的沙发上 喝咖啡"
@@ -73,11 +73,11 @@ The first reference injects the living room background and the second reference 
 
 ```bash
 ./QwenImageCLI \
-  --model mzbac/Qwen-Image-Edit-2509-8bit \
+  --model mzbac/Qwen-Image-Edit-2511-8bit \
   --true-cfg-scale 1.0 \
   --guidance 1.0 \
-  --steps 8 \
-  --lora Osrivers/Qwen-Image-Edit-Lightning-8steps-V1.0.safetensors \
+  --steps 4 \
+  --lora lightx2v/Qwen-Image-Edit-2511-Lightning:Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
   --reference-image images/person1.png \
   --reference-image images/person2.png \
   --prompt "根据这图1中女性和图2中的男性，生成一组结婚照，并遵循以下描述：新郎穿着红色的中式马褂，新娘穿着精致的秀禾服，头戴金色凤冠。他们并肩站立在古老的朱红色宫墙前，背景是雕花的木窗。光线明亮柔和，构图对称，氛围喜庆而庄重。"
@@ -183,11 +183,11 @@ Using the decomposed layers as references to place the subject into a Sydney CBD
   --model Qwen/Qwen-Image-Edit-2511 \
   --true-cfg-scale 1.0 \
   --guidance 1.0 \
-  --steps 8 \
+  --steps 4 \
   --edit-resolution 1024 \
   --width 1024 \
   --height 1024 \
-  --lora Osrivers/Qwen-Image-Edit-Lightning-8steps-V1.0.safetensors \
+  --lora lightx2v/Qwen-Image-Edit-2511-Lightning:Qwen-Image-Edit-2511-Lightning-4steps-V1.0-fp32.safetensors \
   --reference-image examples/layered_layer_1.png \
   --reference-image examples/layered_layer_2.png \
   --prompt "Using Picture 2 as the subject, place her naturally into a photo-realistic Sydney, Australia city street scene (Sydney CBD with light rail; subtle Sydney Opera House or Harbour Bridge in the distance). Keep her pose, face, hair, outfit, and flower bag from Picture 2, but ensure she is leaning against a real support (the side of a stopped light-rail tram or a nearby pole/rail) so the contact makes physical sense. Match lighting, perspective, and shadows." \

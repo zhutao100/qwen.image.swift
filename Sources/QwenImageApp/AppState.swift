@@ -137,8 +137,8 @@ struct ModelDefinition: Identifiable, Equatable {
     description: "Text-to-image generation and image editing model",
     modes: [.textToImage, .editing],
     variantRepoIds: [
-      .full: "Qwen/Qwen-Image-Edit-2509",
-      .quantized8bit: "mzbac/Qwen-Image-Edit-2509-8bit"
+      .full: "Qwen/Qwen-Image-Edit-2511",
+      .quantized8bit: "mzbac/Qwen-Image-Edit-2511-8bit"
     ]
   )
 
