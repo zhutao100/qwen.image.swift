@@ -206,6 +206,7 @@ public final class QwenImagePipeline {
   private var attentionQuantizationSpec: QwenQuantizationSpec?
 
   private var progressSubject: PassthroughSubject<ProgressInfo, Never>?
+  private var progressRequested = false
   private var pendingLoraURL: URL?
   private var pendingLoraScale: Float = 1.0
 
@@ -213,8 +214,6 @@ public final class QwenImagePipeline {
     self.config = config
   }
 
-  /// Inform the pipeline of the snapshot root directory so it can lazily
-  /// load components (UNet, VAE, vision tower) as needed.
   public func setBaseDirectory(_ directory: URL) {
     baseWeightsDirectory = directory
     if transformerDirectory == nil {
@@ -222,14 +221,17 @@ public final class QwenImagePipeline {
     }
   }
 
-  /// Register a LoRA adapter to be applied lazily once the UNet is loaded.
   public func setPendingLora(from url: URL, scale: Float = 1.0) {
     pendingLoraURL = url
     pendingLoraScale = scale
   }
 
   public var progress: AnyPublisher<ProgressInfo, Never>? {
-    progressSubject?.eraseToAnyPublisher()
+    if progressSubject == nil {
+      progressSubject = .init()
+    }
+    progressRequested = true
+    return progressSubject?.eraseToAnyPublisher()
   }
 
   private func combinedQuantizationPlan(
@@ -630,6 +632,8 @@ public final class QwenImagePipeline {
     )
   }
 
+  // MARK: - Internal Prompt Encoding
+
   func encodeGuidancePromptsInternal(
     prompt: String,
     negativePrompt: String?,
@@ -933,26 +937,26 @@ public final class QwenImagePipeline {
     maxPromptLength: Int? = nil,
     seed: UInt64? = nil
   ) throws -> MLXArray {
-    guard let tokenizer else { throw PipelineError.componentNotLoaded("Tokenizer") }
-    guard let textEncoder else { throw PipelineError.componentNotLoaded("TextEncoder") }
-
     let (scheduler, runtime) = QwenSchedulerFactory.flowMatchSchedulerRuntime(
       model: model,
       generation: parameters
     )
 
     let promptLength = min(maxPromptLength ?? model.maxSequenceLength, model.maxSequenceLength)
+
+    try ensureTokenizer()
+    try ensureTextEncoder()
     let guidanceEncoding = try encodeGuidancePrompts(
       prompt: parameters.prompt,
       negativePrompt: parameters.negativePrompt,
       maxLength: promptLength
     )
+
     let stacked = guidanceEncoding.stackedEmbeddings()
     let embeddings = stacked.embeddings.asType(preferredWeightDType() ?? stacked.embeddings.dtype)
     let attentionMask = stacked.attentionMask.asType(.int32)
 
     MLX.eval(embeddings, attentionMask)
-    offloadEncoderComponents()
 
     try ensureUNetAndVAE(model: model)
 
@@ -996,6 +1000,80 @@ public final class QwenImagePipeline {
       }
 
       latents = scheduler.step(modelOutput: guided, timestep: step, sample: latents)
+      if progressRequested {
+        MLX.eval(latents)
+      }
+      publish(step: step + 1, total: parameters.steps)
+    }
+
+    let decoded = try decodeLatents(latents)
+    return MLX.clip(decoded, min: 0, max: 1)
+  }
+
+  // MARK: - Policy-Free Generation API
+
+  public func generatePixels(
+    parameters: GenerationParameters,
+    model: QwenModelConfiguration,
+    guidanceEncoding: QwenGuidanceEncoding,
+    seed: UInt64? = nil
+  ) throws -> MLXArray {
+    let (scheduler, runtime) = QwenSchedulerFactory.flowMatchSchedulerRuntime(
+      model: model,
+      generation: parameters
+    )
+
+    let stacked = guidanceEncoding.stackedEmbeddings()
+    let embeddings = stacked.embeddings.asType(preferredWeightDType() ?? stacked.embeddings.dtype)
+    let attentionMask = stacked.attentionMask.asType(.int32)
+
+    MLX.eval(embeddings, attentionMask)
+
+    try ensureUNetAndVAE(model: model)
+
+    var latents = try makeInitialLatents(
+      height: runtime.height,
+      width: runtime.width,
+      sigmas: scheduler.sigmas,
+      seed: seed
+    )
+
+    for step in 0..<parameters.steps {
+      let stackedLatents = GuidanceUtilities.stackLatentsForGuidance(latents)
+      let modelInput = scheduler.scaleModelInput(stackedLatents, timestep: step).asType(latents.dtype)
+      let noisePred = try denoiseLatents(
+        timestepIndex: step,
+        runtimeConfig: runtime,
+        latentImages: modelInput,
+        encoderHiddenStates: embeddings,
+        encoderHiddenStatesMask: attentionMask
+      )
+      let (unconditionalNoise, conditionalNoise) = GuidanceUtilities.splitGuidanceLatents(noisePred)
+
+      let guided: MLXArray
+      if let trueCFGScale = parameters.trueCFGScale, trueCFGScale > 1 {
+        var combined = unconditionalNoise + trueCFGScale * (conditionalNoise - unconditionalNoise)
+        let axis = combined.ndim - 1
+        let condSquared = MLX.sum(conditionalNoise * conditionalNoise, axes: [axis], keepDims: true)
+        let combSquared = MLX.sum(combined * combined, axes: [axis], keepDims: true)
+        let epsilon = MLX.ones(condSquared.shape, dtype: condSquared.dtype) * Float32(1e-6)
+        let conditionalNorm = MLX.sqrt(MLX.maximum(condSquared, epsilon))
+        let combinedNorm = MLX.sqrt(MLX.maximum(combSquared, epsilon))
+        let ratio = conditionalNorm / combinedNorm
+        combined = combined * ratio
+        guided = combined.asType(latents.dtype)
+      } else {
+        guided = GuidanceUtilities.applyClassifierFreeGuidance(
+          unconditional: unconditionalNoise,
+          conditional: conditionalNoise,
+          guidanceScale: parameters.guidanceScale
+        ).asType(latents.dtype)
+      }
+
+      latents = scheduler.step(modelOutput: guided, timestep: step, sample: latents)
+      if progressRequested {
+        MLX.eval(latents)
+      }
       publish(step: step + 1, total: parameters.steps)
     }
 
@@ -1011,8 +1089,8 @@ public final class QwenImagePipeline {
     maxPromptLength: Int? = nil,
     seed: UInt64? = nil
   ) throws -> MLXArray {
-    guard let tokenizer else { throw PipelineError.componentNotLoaded("Tokenizer") }
-    guard let textEncoder else { throw PipelineError.componentNotLoaded("TextEncoder") }
+    try ensureTokenizer()
+    try ensureTextEncoder()
 
     let (scheduler, runtime) = QwenSchedulerFactory.flowMatchSchedulerRuntime(
       model: model,
@@ -1046,7 +1124,6 @@ public final class QwenImagePipeline {
       guidanceEncoding.unconditionalMask,
       guidanceEncoding.conditionalMask
     )
-    offloadEncoderComponents()
 
     try ensureUNetAndVAE(model: model)
 
@@ -1071,22 +1148,21 @@ public final class QwenImagePipeline {
     )
 
     var decoded = try decodeLatents(finalLatents)
-    // Strip batch dimension so callers see [3,H,W] pixels.
     if decoded.ndim == 4 {
       decoded = decoded[0, 0..., 0..., 0...]
     }
 
-    if let editRes = parameters.editResolution {
-      let targetWidth = parameters.width
-      let targetHeight = parameters.height
-      if (targetWidth != runtime.width || targetHeight != runtime.height) &&
-         (targetWidth > 0 && targetHeight > 0) {
-        decoded = try QwenImageIO.resize(
-          rgbArray: decoded,
-          targetHeight: targetHeight,
-          targetWidth: targetWidth
-        )
-      }
+    // Resize to exact user-requested dimensions if they differ from runtime dimensions.
+    // This handles cases where runtime dimensions were rounded to multiples of 16.
+    let targetWidth = parameters.width
+    let targetHeight = parameters.height
+    if (targetWidth != runtime.width || targetHeight != runtime.height) &&
+       (targetWidth > 0 && targetHeight > 0) {
+      decoded = try QwenImageIO.resize(
+        rgbArray: decoded,
+        targetHeight: targetHeight,
+        targetWidth: targetWidth
+      )
     }
 
     return MLX.clip(decoded, min: 0, max: 1)
@@ -1094,9 +1170,6 @@ public final class QwenImagePipeline {
 #endif
 
 #if canImport(CoreGraphics)
-  /// Multi-image edit: accepts two reference images and concatenates their tokens.
-  /// Both references are resized to the same canvas size computed from the first image
-  /// (rounded to multiples of 16, targeting the output canvas area).
   public func generateEditedPixels(
     parameters: GenerationParameters,
     model: QwenModelConfiguration,
@@ -1104,8 +1177,8 @@ public final class QwenImagePipeline {
     maxPromptLength: Int? = nil,
     seed: UInt64? = nil
   ) throws -> MLXArray {
-    guard let tokenizer else { throw PipelineError.componentNotLoaded("Tokenizer") }
-    guard let textEncoder else { throw PipelineError.componentNotLoaded("TextEncoder") }
+    try ensureTokenizer()
+    try ensureTextEncoder()
 
     precondition(!referenceImages.isEmpty, "At least one reference image required.")
 
@@ -1141,7 +1214,7 @@ public final class QwenImagePipeline {
       guidanceEncoding.unconditionalMask,
       guidanceEncoding.conditionalMask
     )
-    offloadEncoderComponents()
+
     try ensureUNetAndVAE(model: model)
 
     var latents = try makeInitialLatents(
@@ -1169,17 +1242,17 @@ public final class QwenImagePipeline {
       decoded = decoded[0, 0..., 0..., 0...]
     }
 
-    if let editRes = parameters.editResolution {
-      let targetWidth = parameters.width
-      let targetHeight = parameters.height
-      if (targetWidth != runtime.width || targetHeight != runtime.height) &&
-         (targetWidth > 0 && targetHeight > 0) {
-        decoded = try QwenImageIO.resize(
-          rgbArray: decoded,
-          targetHeight: targetHeight,
-          targetWidth: targetWidth
-        )
-      }
+    // Resize to exact user-requested dimensions if they differ from runtime dimensions.
+    // This handles cases where runtime dimensions were rounded to multiples of 16.
+    let targetWidth = parameters.width
+    let targetHeight = parameters.height
+    if (targetWidth != runtime.width || targetHeight != runtime.height) &&
+       (targetWidth > 0 && targetHeight > 0) {
+      decoded = try QwenImageIO.resize(
+        rgbArray: decoded,
+        targetHeight: targetHeight,
+        targetWidth: targetWidth
+      )
     }
 
     return MLX.clip(decoded, min: 0, max: 1)
@@ -1253,9 +1326,22 @@ public final class QwenImagePipeline {
       throw PipelineError.invalidTensorShape("Mismatched patch volumes across reference images.")
     }
 
-    let stackedPatches = patchInputs.count == 1
-      ? patchInputs[0]
-      : MLX.concatenated(patchInputs, axis: 0)
+    let maxTokens = patchInputs.map { $0.dim(1) }.max() ?? 0
+    let paddedInputs: [MLXArray]
+    if maxTokens > 0 && patchInputs.contains(where: { $0.dim(1) != maxTokens }) {
+      paddedInputs = patchInputs.map { patches in
+        let tokens = patches.dim(1)
+        guard tokens < maxTokens else { return patches }
+        let pad = MLX.zeros([1, maxTokens - tokens, patchVolume], dtype: patches.dtype)
+        return MLX.concatenated([patches, pad], axis: 1)
+      }
+    } else {
+      paddedInputs = patchInputs
+    }
+
+    let stackedPatches = paddedInputs.count == 1
+      ? paddedInputs[0]
+      : MLX.concatenated(paddedInputs, axis: 0)
     visionLogger.debug("stacked patch input shape=\(stackedPatches.shape)")
     return VisionPromptContext(
       patchInputs: stackedPatches,
@@ -1398,8 +1484,6 @@ public final class QwenImagePipeline {
     var conditionalMask = rawCondMask.asType(.int32)
     var referenceTokens = rawReferenceTokens.asType(latents.dtype)
 
-    // Ensure we have per-branch reference tokens (uncond/cond). If only a single
-    // row is provided, share it across both branches.
     if referenceTokens.dim(0) == 1 {
       referenceTokens = MLX.concatenated([referenceTokens, referenceTokens], axis: 0)
     }
@@ -1461,7 +1545,6 @@ public final class QwenImagePipeline {
         tokenCountCached = tokenCount
       }
 
-      // Conditional branch
       let combinedCond = MLX.concatenated([latentTokensSingle, referenceTokensCond], axis: 1)
       if step == 0 {
         let latTok = latentTokensSingle.dim(1)
@@ -1486,7 +1569,6 @@ public final class QwenImagePipeline {
         width: runtime.width
       )
 
-      // Unconditional branch
       let combinedUncond = MLX.concatenated([latentTokensSingle, referenceTokensUncond], axis: 1)
       pipelineLogger.debug("edit: forward(uncond) step=\(step)")
       let noiseTokensUncond = try unet.forwardTokens(
@@ -1527,6 +1609,9 @@ public final class QwenImagePipeline {
       }
 
       latents = scheduler.step(modelOutput: guided, timestep: step, sample: latents)
+      if progressRequested {
+        MLX.eval(latents)
+      }
       publish(step: step + 1, total: parameters.steps)
     }
 
@@ -1582,19 +1667,81 @@ public final class QwenImagePipeline {
     return sumArray.item(Int.self)
   }
 
-  /// Release large encoder-side components once prompt / reference encodings
-  /// have been computed, so the UNet denoising loop can run with a smaller
-  /// resident set. This primarily targets the text encoder and vision tower.
-  private func offloadEncoderComponents() {
+  // MARK: - Explicit Lifecycle Hooks
+
+  public var isTokenizerLoaded: Bool {
+    tokenizer != nil
+  }
+
+  public var isTextEncoderLoaded: Bool {
+    textEncoder != nil
+  }
+
+  public var isVisionTowerLoaded: Bool {
+    visionTower != nil
+  }
+
+  public var isUNetLoaded: Bool {
+    unet != nil
+  }
+
+  public var isVAELoaded: Bool {
+    vae != nil
+  }
+
+  public func releaseEncoders() {
     textEncoder = nil
     textEncoderQuantization = nil
     textEncoderRuntimeQuantized = false
     visionTower = nil
     visionRuntimeQuantized = false
+    pipelineLogger.debug("Encoders released (text encoder + vision tower)")
   }
 
-  /// Lazily load UNet and VAE from the base weights directory (or existing
-  /// transformerDirectory) after encoder components have been offloaded.
+  public func releaseTextEncoder() {
+    textEncoder = nil
+    textEncoderQuantization = nil
+    textEncoderRuntimeQuantized = false
+    pipelineLogger.debug("Text encoder released")
+  }
+
+  public func releaseVisionTower() {
+    visionTower = nil
+    visionRuntimeQuantized = false
+    pipelineLogger.debug("Vision tower released")
+  }
+
+  public func releaseTokenizer() {
+    tokenizer = nil
+    pipelineLogger.debug("Tokenizer released")
+  }
+
+  public func reloadTextEncoder() throws {
+    try ensureTextEncoder()
+    pipelineLogger.debug("Text encoder reloaded")
+  }
+
+  public func reloadTokenizer() throws {
+    try ensureTokenizer()
+    pipelineLogger.debug("Tokenizer reloaded")
+  }
+
+  private func ensureTokenizer() throws {
+    if tokenizer != nil { return }
+    guard let directory = baseWeightsDirectory else {
+      throw PipelineError.componentNotLoaded("TokenizerWeightsDirectory")
+    }
+    try prepareTokenizer(from: directory, maxLength: nil)
+  }
+
+  private func ensureTextEncoder() throws {
+    if textEncoder != nil { return }
+    guard let directory = transformerDirectory ?? baseWeightsDirectory else {
+      throw PipelineError.componentNotLoaded("TextEncoderWeightsDirectory")
+    }
+    try prepareTextEncoder(from: directory)
+  }
+
   private func ensureUNetAndVAE(model: QwenModelConfiguration) throws {
     if unet != nil && vae != nil { return }
     guard let directory = transformerDirectory ?? baseWeightsDirectory else {
@@ -1800,14 +1947,6 @@ public final class QwenImagePipeline {
     return nil
   }
 
-  /// Apply a LoRA adapter stored in a safetensors file to the UNet transformer (and standalone
-  /// transformer if loaded).
-  ///
-  /// The file is expected to use HF-style keys following the pattern:
-  /// `transformer_blocks.N.*.{to_q,to_k,to_v,to_add_out,to_out.0,img_mlp.*,txt_mlp.*}.{alpha,lora_down.weight,lora_up.weight}`.
-  ///
-  /// This matches the naming used by Qwen-Image Lightning adapters such as:
-  /// `Osrivers/Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors`.
   public func applyLora(from fileURL: URL, scale: Float = 1.0) throws {
     guard let unet else {
       throw PipelineError.componentNotLoaded("UNet")
@@ -1871,7 +2010,6 @@ public final class QwenImagePipeline {
     return layers
   }
 
-  /// Map internal transformer module paths to HF-style base keys used by LoRA and quantization.
   private static func transformerLoraBaseName(for path: String) -> String {
     var name = path
     name = name.replacingOccurrences(of: ".img_ff.mlp_in", with: ".img_mlp.net.0.proj")
@@ -1976,6 +2114,7 @@ public final class QwenImagePipeline {
   }
 
   private func publish(step: Int, total: Int) {
+    guard progressRequested else { return }
     if progressSubject == nil {
       progressSubject = .init()
     }

@@ -6,6 +6,7 @@ import MLX
 import MLXNN
 import MLXRandom
 import QwenImage
+import QwenImageRuntime
 import Metal
 
 struct FileLogHandler: LogHandler {
@@ -93,9 +94,9 @@ struct QwenImageCLIEntry {
     } else {
       logger.warning("No Metal device detected; MLX may run on CPU.")
     }
-    let cacheLimitBytes = 2 * 1024 * 1024 * 1024
-    MLX.GPU.set(cacheLimit: cacheLimitBytes)
-    logger.info("Set MLX GPU cache limit to \(ByteCountFormatter.string(fromByteCount: Int64(cacheLimitBytes), countStyle: .memory))")
+    let recommendedPreset = GPUCachePolicy.recommendedPreset()
+    GPUCachePolicy.applyPreset(recommendedPreset)
+    logger.info("Applied GPU cache preset: \(recommendedPreset) (system memory: \(GPUCachePolicy.totalSystemMemoryFormatted))")
     Device.setDefault(device: .gpu)
     do {
       let current = Device.defaultDevice()
@@ -126,7 +127,6 @@ struct QwenImageCLIEntry {
     var quantizeComponents: [String] = ["transformer", "text_encoder"]
     var quantizeSnapshotSwiftOut: String?
 
-    // Layered generation mode
     var isLayeredMode = false
     var layeredImagePath: String?
     var layeredLayers = 4
@@ -290,7 +290,6 @@ struct QwenImageCLIEntry {
       quantAttnSpecOverride = QwenQuantizationSpec(groupSize: group, bits: bits, mode: mode)
     }
 
-    // Handle layered generation mode
     if isLayeredMode {
       guard let imagePath = layeredImagePath else {
         fail("Layered mode requires --layered-image PATH")
@@ -822,16 +821,11 @@ struct QwenImageCLIEntry {
     loraPath: String?
   ) throws {
 #if canImport(CoreGraphics)
-    let cacheLimitBytes = 2 * 1024 * 1024 * 1024
-    MLX.GPU.set(cacheLimit: cacheLimitBytes)
-    logger.info("Set MLX GPU cache limit to \(ByteCountFormatter.string(fromByteCount: Int64(cacheLimitBytes), countStyle: .memory)) for layered generation")
-
     logger.info("Loading layered pipeline from \(snapshotRoot.path)")
     let pipeline = try blockingAwait {
       try await QwenLayeredPipeline.load(from: snapshotRoot)
     }
 
-    // Apply LoRA if provided
     if let loraPath = loraPath {
       let loraURL = try resolveLoraSafetensors(
         lora: loraPath,
@@ -844,12 +838,10 @@ struct QwenImageCLIEntry {
       try pipeline.applyLora(from: loraURL, scale: 1.0)
     }
 
-    // Load input image
     logger.info("Loading input image from \(imagePath)")
     let cgImage = loadCGImage(at: imagePath)
     let inputArray = cgImageToMLXArray(cgImage)
 
-    // Create parameters
     let parameters = LayeredGenerationParameters(
       layers: layers,
       resolution: resolution,
@@ -863,16 +855,12 @@ struct QwenImageCLIEntry {
 
     logger.info("Generating \(layers) layers at \(resolution)x\(resolution) with \(steps) steps")
 
-    // Generate layers
     let layerImages = try pipeline.generate(
       image: inputArray,
       parameters: parameters
     ) { _, _, _ in
-      // Progress callback - no logging due to lazy evaluation
     }
 
-    // Save output images
-    // Detect if outputPath is a directory (ends with / or is existing directory)
     let outputURL = URL(fileURLWithPath: outputPath).standardizedFileURL
     let isDirectory = outputPath.hasSuffix("/") || {
       var isDir: ObjCBool = false
@@ -884,12 +872,10 @@ struct QwenImageCLIEntry {
     let ext: String
 
     if isDirectory {
-      // outputPath is a directory: save as {dir}/layer_1.png, layer_2.png, ...
       outputDir = outputURL
       baseName = "layer"
       ext = "png"
     } else {
-      // outputPath is a file: save as {baseName}_layer_1.{ext}, {baseName}_layer_2.{ext}, ...
       outputDir = outputURL.deletingLastPathComponent()
       baseName = outputURL.deletingPathExtension().lastPathComponent
       ext = outputURL.pathExtension.isEmpty ? "png" : outputURL.pathExtension
@@ -939,14 +925,11 @@ struct QwenImageCLIEntry {
 
     context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-    // Convert to float and normalize to [-1, 1] (matching Python's VaeImageProcessor)
-    // Output RGBA (4 channels) - required for layered VAE which expects 4 input channels
     var floatData = [Float](repeating: 0, count: width * height * 4)
     for y in 0..<height {
       for x in 0..<width {
         let srcIdx = y * bytesPerRow + x * bytesPerPixel
         let dstIdx = y * width + x
-        // Normalize from [0, 255] to [-1, 1]: (x / 255.0) * 2 - 1 = x / 127.5 - 1
         floatData[dstIdx] = Float(pixelData[srcIdx]) / 127.5 - 1.0  // R
         floatData[width * height + dstIdx] = Float(pixelData[srcIdx + 1]) / 127.5 - 1.0  // G
         floatData[2 * width * height + dstIdx] = Float(pixelData[srcIdx + 2]) / 127.5 - 1.0  // B
@@ -954,20 +937,16 @@ struct QwenImageCLIEntry {
       }
     }
 
-    // Create MLXArray with shape [1, 4, H, W] (RGBA)
     let array = MLXArray(floatData, [1, 4, height, width])
     return array.asType(.bfloat16)
   }
 
   private static func mlxArrayToImage(_ array: MLXArray) -> PipelineImage {
-    // Array is expected to be [C, H, W] or [1, C, H, W] with values in [-1, 1]
     var pixels = array
     if pixels.ndim == 4 {
       pixels = pixels.squeezed(axis: 0)
     }
 
-    // Denormalize from [-1, 1] to [0, 1], then clamp and convert to uint8
-    // Formula: (x * 0.5 + 0.5).clamp(0, 1) * 255
     pixels = pixels * 0.5 + 0.5
     pixels = MLX.clip(pixels, min: 0, max: 1)
     pixels = (pixels * 255).asType(.uint8)
@@ -986,7 +965,6 @@ struct QwenImageCLIEntry {
       _ = ptr.copyBytes(to: UnsafeMutableBufferPointer(start: &byteData, count: count))
     }
 
-    // Create CGImage
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let bitmapInfo: CGBitmapInfo
     if channels == 4 {

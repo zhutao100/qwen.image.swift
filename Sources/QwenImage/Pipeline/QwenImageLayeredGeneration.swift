@@ -28,7 +28,6 @@ private func bilinearResizeLayered(_ image: MLXArray, targetHeight: Int, targetW
   let scaleH = Float(srcHeight) / Float(targetHeight)
   let scaleW = Float(srcWidth) / Float(targetWidth)
 
-  // Vectorized coordinate generation using MLXArray.linspace
   let yCoords = MLX.clip(
     MLXArray.linspace(Float32(0.5), Float32(targetHeight) - 0.5, count: targetHeight) * scaleH - 0.5,
     min: 0,
@@ -40,7 +39,6 @@ private func bilinearResizeLayered(_ image: MLXArray, targetHeight: Int, targetW
     max: Float32(srcWidth - 1)
   )
 
-  // Compute floor indices and weights vectorized
   let y0Arr = MLX.floor(yCoords).asType(.int32)
   let y1Arr = MLX.minimum(y0Arr + 1, MLXArray(Int32(srcHeight - 1)))
   let wyArr = (yCoords - y0Arr.asType(.float32)).reshaped([1, 1, targetHeight, 1])
@@ -49,7 +47,6 @@ private func bilinearResizeLayered(_ image: MLXArray, targetHeight: Int, targetW
   let x1Arr = MLX.minimum(x0Arr + 1, MLXArray(Int32(srcWidth - 1)))
   let wxArr = (xCoords - x0Arr.asType(.float32)).reshaped([1, 1, 1, targetWidth])
 
-  // Bilinear interpolation
   let transposed = image.transposed(0, 1, 3, 2)
 
   let rowsY0 = MLX.take(transposed, y0Arr, axis: 3).transposed(0, 1, 3, 2)
@@ -75,10 +72,25 @@ public enum LayeredPipelineError: Error {
   case invalidParameters(String)
 }
 
+// MARK: - Layered Prompt Encoding
+
+public struct LayeredPromptEncoding {
+  public let embeddings: MLXArray
+
+  public let mask: MLXArray
+
+  public var sequenceLength: Int {
+    embeddings.dim(1)
+  }
+
+  public init(embeddings: MLXArray, mask: MLXArray) {
+    self.embeddings = embeddings
+    self.mask = mask
+  }
+}
+
 // MARK: - Layered Generation Pipeline
 
-/// Standalone pipeline for layered image generation.
-/// Can be used independently or alongside QwenImagePipeline.
 public class QwenLayeredPipeline {
   private var logger = Logger(label: "qwen.image.layered")
 
@@ -91,23 +103,28 @@ public class QwenLayeredPipeline {
   public let latentChannels: Int = 16
   public let patchSize: Int = 2
 
+  // MARK: - Weights Metadata (for lazy reloads)
+
+  private var baseWeightsDirectory: URL?
+  private var weightsDType: DType = .bfloat16
+  private var textEncoderQuantization: QwenQuantizationPlan?
+
   public init() {
     logger.info("QwenLayeredPipeline initialized")
   }
 
-  /// Load pipeline components from a model directory
   public static func load(from path: URL, dtype: DType = .bfloat16) async throws -> QwenLayeredPipeline {
     let pipeline = QwenLayeredPipeline()
     let loader = QwenWeightsLoader()
 
     pipeline.logger.info("Loading layered pipeline from \(path.path)")
+    pipeline.baseWeightsDirectory = path
+    pipeline.weightsDType = dtype
 
-    // Load VAE
     pipeline.logger.info("Loading VAE...")
     pipeline.vae = QwenVAE()
     try loader.loadVAE(fromDirectory: path, into: pipeline.vae!, dtype: dtype)
 
-    // Load transformer with layered config (using working QwenTransformer)
     pipeline.logger.info("Loading transformer...")
     let transformerPath = path.appending(path: "transformer")
     let transformerConfig = try QwenLayeredTransformerConfiguration.load(from: transformerPath)
@@ -133,12 +150,12 @@ public class QwenLayeredPipeline {
       }
     }
 
-    // Load text encoder and tokenizer (always required for proper generation)
     pipeline.logger.info("Loading text encoder...")
     let textEncoderQuantization = quantizationPlan(
       forLayeredComponentAt: path,
       configRelativePath: "text_encoder/config.json"
     )
+    pipeline.textEncoderQuantization = textEncoderQuantization
     pipeline.textEncoder = QwenTextEncoder()
     try loader.loadTextEncoder(
       fromDirectory: path,
@@ -171,8 +188,6 @@ public class QwenLayeredPipeline {
 
   // MARK: - LoRA Support
 
-  /// Apply a LoRA adapter to the layered transformer.
-  /// Compatible with Qwen-Image Lightning adapters.
   public func applyLora(from fileURL: URL, scale: Float = 1.0) throws {
     guard let transformer = transformer else {
       throw LayeredPipelineError.componentsNotLoaded
@@ -232,7 +247,6 @@ public class QwenLayeredPipeline {
     return layers
   }
 
-  /// Map internal transformer module paths to HF-style base keys used by LoRA.
   private static func transformerLoraBaseName(for path: String) -> String {
     var name = path
     name = name.replacingOccurrences(of: ".img_ff.mlp_in", with: ".img_mlp.net.0.proj")
@@ -312,7 +326,6 @@ public class QwenLayeredPipeline {
     return appliedCount
   }
 
-  /// Generate layer images from an input image
   public func generate(
     image: MLXArray,
     parameters: LayeredGenerationParameters,
@@ -331,7 +344,6 @@ public class QwenLayeredPipeline {
     let batchSize = image.dim(0)
     let layers = parameters.layers
 
-    // Calculate target dimensions
     let inputHeight = image.dim(-2)
     let inputWidth = image.dim(-1)
     let aspectRatio = Float(inputWidth) / Float(inputHeight)
@@ -392,13 +404,11 @@ public class QwenLayeredPipeline {
     let packedImageLatent = LatentPacking.packSingle(imageLatent4D)
     logger.debug("Packed image latent shape: \(packedImageLatent.shape)")
 
-    guard textEncoder != nil, tokenizer != nil else {
-      throw LayeredPipelineError.componentsNotLoaded
-    }
-    let prompt = parameters.prompt ?? ""
-    let encoded = try encodePrompt(prompt, dtype: imageLatent.dtype)
+    let promptText = parameters.prompt ?? ""
+    let encoded = try encodePrompt(promptText, dtype: imageLatent.dtype)
     let promptEmbeds = encoded.embeddings
     let promptMask = encoded.mask
+    let txtSeqLens = [Int](repeating: promptEmbeds.dim(1), count: batchSize)
 
     var imgShapes: [[(Int, Int, Int)]] = []
     for _ in 0..<batchSize {
@@ -409,7 +419,6 @@ public class QwenLayeredPipeline {
       imgShapes.append(shapes)
     }
 
-    let txtSeqLens = [Int](repeating: promptEmbeds.dim(1), count: batchSize)
     let additionalTCond = MLXArray.zeros([batchSize]).asType(.int32)
 
     let doTrueCFG = parameters.trueCFGScale > 1.0 && parameters.negativePrompt != nil
@@ -430,7 +439,6 @@ public class QwenLayeredPipeline {
     } else {
       MLX.eval(promptEmbeds, promptMask)
     }
-    textEncoder = nil
 
     logger.info("Starting denoising with \(parameters.numInferenceSteps) steps")
 
@@ -477,6 +485,9 @@ public class QwenLayeredPipeline {
       }
 
       latents = scheduler.step(modelOutput: noisePred, timestep: i, sample: latents)
+      if progress != nil {
+        MLX.eval(latents)
+      }
 
       let progressFraction = Float(i + 1) / Float(parameters.numInferenceSteps)
       progress?(i, parameters.numInferenceSteps, progressFraction)
@@ -490,7 +501,6 @@ public class QwenLayeredPipeline {
       width: latentWidth
     )
 
-    // Denormalize before decoding (matches Python pipeline behavior)
     unpackedLatents = QwenVAE.denormalizeLatent(unpackedLatents)
 
     var decodedLayers: [MLXArray] = []
@@ -502,6 +512,219 @@ public class QwenLayeredPipeline {
 
     logger.info("Generation complete, produced \(decodedLayers.count) layers")
     return decodedLayers
+  }
+
+  // MARK: - Policy-Free Generation API
+
+  public func encodePromptToEncoding(_ prompt: String, dtype: DType) throws -> LayeredPromptEncoding {
+    let encoded = try encodePrompt(prompt, dtype: dtype)
+    return LayeredPromptEncoding(embeddings: encoded.embeddings, mask: encoded.mask)
+  }
+
+  public func generate(
+    image: MLXArray,
+    parameters: LayeredGenerationParameters,
+    promptEncoding: LayeredPromptEncoding,
+    negativePromptEncoding: LayeredPromptEncoding? = nil,
+    progress: ((Int, Int, Float) -> Void)? = nil
+  ) throws -> [MLXArray] {
+    guard let vae = vae, let transformer = transformer else {
+      throw LayeredPipelineError.componentsNotLoaded
+    }
+
+    logger.info("Starting layer generation with \(parameters.layers) layers (using precomputed encodings)")
+
+    if let seed = parameters.seed {
+      MLXRandom.seed(seed)
+    }
+
+    let batchSize = image.dim(0)
+    let layers = parameters.layers
+
+    let inputHeight = image.dim(-2)
+    let inputWidth = image.dim(-1)
+    let aspectRatio = Float(inputWidth) / Float(inputHeight)
+    let (targetWidth, targetHeight) = calculateLayeredDimensions(
+      resolution: parameters.resolution,
+      aspectRatio: aspectRatio
+    )
+
+    logger.info("Input: \(inputWidth)x\(inputHeight), target: \(targetWidth)x\(targetHeight)")
+
+    var resizedImage = image
+    if image.ndim == 5 {
+      resizedImage = image.squeezed(axis: 2)
+    }
+    if inputWidth != targetWidth || inputHeight != targetHeight {
+      resizedImage = resizeImageLayered(resizedImage, targetHeight: targetHeight, targetWidth: targetWidth)
+    }
+
+    let height = targetHeight
+    let width = targetWidth
+
+    logger.debug("Encoding image to latent space, shape: \(resizedImage.shape)")
+    let (rawLatent, _, _) = vae.encodeRaw(resizedImage)
+    let imageLatent = QwenVAE.normalizeLatent(rawLatent)
+
+    let latentHeight = height / vaeScaleFactor
+    let latentWidth = width / vaeScaleFactor
+
+    let halfH = latentHeight / patchSize
+    let halfW = latentWidth / patchSize
+    let imageSeqLen = Float(halfH * halfW)
+    let baseSeqLen: Float = 256.0
+    let mu = sqrt(imageSeqLen / baseSeqLen)
+
+    let scheduler = QwenFlowMatchScheduler(
+      numInferenceSteps: parameters.numInferenceSteps,
+      width: width,
+      height: height,
+      requiresSigmaShift: false,
+      mu: mu
+    )
+
+    let noiseShape = [batchSize, layers + 1, latentChannels, latentHeight, latentWidth]
+    let layerNoise = MLXRandom.normal(noiseShape).asType(imageLatent.dtype)
+    var latents = LatentPacking.pack(layerNoise)
+
+    let imageLatent4D: MLXArray
+    if imageLatent.ndim == 5 {
+      imageLatent4D = imageLatent.squeezed(axis: 2)
+    } else {
+      imageLatent4D = imageLatent
+    }
+    let packedImageLatent = LatentPacking.packSingle(imageLatent4D)
+
+    let promptEmbeds = promptEncoding.embeddings
+    let promptMask = promptEncoding.mask
+    let txtSeqLens = [Int](repeating: promptEncoding.sequenceLength, count: batchSize)
+
+    var imgShapes: [[(Int, Int, Int)]] = []
+    for _ in 0..<batchSize {
+      var shapes: [(Int, Int, Int)] = []
+      for _ in 0..<(layers + 2) {
+        shapes.append((1, halfH, halfW))
+      }
+      imgShapes.append(shapes)
+    }
+
+    let additionalTCond = MLXArray.zeros([batchSize]).asType(.int32)
+
+    let doTrueCFG = parameters.trueCFGScale > 1.0 && negativePromptEncoding != nil
+    let negativePromptEmbeds = negativePromptEncoding?.embeddings
+    let negativePromptMask = negativePromptEncoding?.mask
+    let negativeTxtSeqLens: [Int]? = negativePromptEncoding.map {
+      [Int](repeating: $0.sequenceLength, count: batchSize)
+    }
+
+    if let negEmbeds = negativePromptEmbeds, let negMask = negativePromptMask {
+      MLX.eval(promptEmbeds, promptMask, negEmbeds, negMask)
+    } else {
+      MLX.eval(promptEmbeds, promptMask)
+    }
+
+    logger.info("Starting denoising with \(parameters.numInferenceSteps) steps")
+
+    for i in 0..<parameters.numInferenceSteps {
+      let latentInput = MLX.concatenated([latents, packedImageLatent], axis: 1)
+      let sigma = scheduler.sigmas[i]
+      let timestepExpanded = MLX.full([batchSize], values: sigma).asType(latents.dtype)
+
+      var noisePred = transformer(
+        hiddenStates: latentInput,
+        encoderHiddenStates: promptEmbeds,
+        encoderHiddenStatesMask: promptMask,
+        timestep: timestepExpanded,
+        imgShapes: imgShapes,
+        txtSeqLens: txtSeqLens,
+        additionalTCond: additionalTCond
+      )
+
+      noisePred = noisePred[0..., 0..<latents.dim(1), 0...]
+
+      if doTrueCFG, let negEmbeds = negativePromptEmbeds, let negMask = negativePromptMask, let negTxtSeqLens = negativeTxtSeqLens {
+        var negNoisePred = transformer(
+          hiddenStates: latentInput,
+          encoderHiddenStates: negEmbeds,
+          encoderHiddenStatesMask: negMask,
+          timestep: timestepExpanded,
+          imgShapes: imgShapes,
+          txtSeqLens: negTxtSeqLens,
+          additionalTCond: additionalTCond
+        )
+        negNoisePred = negNoisePred[0..., 0..<latents.dim(1), 0...]
+
+        let scale = parameters.trueCFGScale
+        var combPred = negNoisePred + scale * (noisePred - negNoisePred)
+
+        if parameters.cfgNormalize {
+          let condNorm = MLX.sqrt(MLX.sum(MLX.multiply(noisePred, noisePred), axis: -1, keepDims: true))
+          let noiseNorm = MLX.sqrt(MLX.sum(MLX.multiply(combPred, combPred), axis: -1, keepDims: true))
+          let eps = MLXArray(Float(1e-8))
+          combPred = MLX.multiply(combPred, MLX.divide(condNorm, noiseNorm + eps))
+        }
+
+        noisePred = combPred
+      }
+
+      latents = scheduler.step(modelOutput: noisePred, timestep: i, sample: latents)
+      if progress != nil {
+        MLX.eval(latents)
+      }
+
+      let progressFraction = Float(i + 1) / Float(parameters.numInferenceSteps)
+      progress?(i, parameters.numInferenceSteps, progressFraction)
+    }
+
+    logger.info("Decoding layers")
+    var unpackedLatents = LatentPacking.unpack(
+      latents,
+      layers: layers,
+      height: latentHeight,
+      width: latentWidth
+    )
+
+    unpackedLatents = QwenVAE.denormalizeLatent(unpackedLatents)
+
+    var decodedLayers: [MLXArray] = []
+    for l in 1...layers {
+      let layerLatent = unpackedLatents[0..., l, 0..., 0..., 0...]
+      let decoded = vae.decode(layerLatent)
+      decodedLayers.append(decoded)
+    }
+
+    logger.info("Generation complete, produced \(decodedLayers.count) layers")
+    return decodedLayers
+  }
+
+  // MARK: - Explicit Lifecycle Hooks
+
+  public var isTextEncoderLoaded: Bool {
+    textEncoder != nil
+  }
+
+  public var isTokenizerLoaded: Bool {
+    tokenizer != nil
+  }
+
+  public func releaseTextEncoder() {
+    textEncoder = nil
+    logger.debug("Text encoder released")
+  }
+
+  public func releaseTokenizer() {
+    tokenizer = nil
+    logger.debug("Tokenizer released")
+  }
+
+  public func reloadTextEncoder() throws {
+    try ensureTextEncoder()
+    logger.debug("Text encoder reloaded")
+  }
+
+  public func reloadTokenizer() throws {
+    try ensureTokenizer()
+    logger.debug("Tokenizer reloaded")
   }
 
   // MARK: - Private Helpers
@@ -518,7 +741,12 @@ public class QwenLayeredPipeline {
   }
 
   private func encodePrompt(_ prompt: String, dtype: DType) throws -> (embeddings: MLXArray, mask: MLXArray) {
-    guard let tokenizer = tokenizer, let textEncoder = textEncoder else {
+    try ensureTokenizer()
+    try ensureTextEncoder()
+    guard let tokenizer else {
+      throw LayeredPipelineError.tokenizerNotLoaded
+    }
+    guard let textEncoder = textEncoder else {
       throw LayeredPipelineError.textEncoderNotLoaded
     }
 
@@ -527,18 +755,62 @@ public class QwenLayeredPipeline {
     let inputIds = tokens.inputIds
     let attentionMask = tokens.attentionMask
 
-    // encode returns (embeddings, mask) tuple with dropIndex already applied
     let (embeddings, mask) = textEncoder.encode(inputIds: inputIds, attentionMask: attentionMask)
 
     return (embeddings.asType(dtype), mask)
+  }
+
+  private func ensureTokenizer() throws {
+    if tokenizer != nil { return }
+    guard let root = baseWeightsDirectory else {
+      throw LayeredPipelineError.tokenizerNotLoaded
+    }
+    let tokenizerPath = root.appending(path: "tokenizer")
+    let textEncoderPath = root.appending(path: "text_encoder")
+
+    if FileManager.default.fileExists(atPath: tokenizerPath.path) {
+      tokenizer = try QwenTokenizer.load(from: tokenizerPath)
+    } else if FileManager.default.fileExists(atPath: textEncoderPath.path) {
+      tokenizer = try QwenTokenizer.load(from: textEncoderPath)
+    } else {
+      tokenizer = try QwenTokenizer.load(from: root)
+    }
+  }
+
+  private func ensureTextEncoder() throws {
+    if textEncoder != nil { return }
+    guard let root = baseWeightsDirectory else {
+      throw LayeredPipelineError.textEncoderNotLoaded
+    }
+
+    let loader = QwenWeightsLoader()
+    let quantization = textEncoderQuantization ?? Self.quantizationPlan(
+      forLayeredComponentAt: root,
+      configRelativePath: "text_encoder/config.json"
+    )
+
+    let encoder = QwenTextEncoder()
+    try loader.loadTextEncoder(
+      fromDirectory: root,
+      into: encoder,
+      dtype: weightsDType,
+      quantization: quantization
+    )
+    textEncoder = encoder
+    textEncoderQuantization = quantization
+
+    if let quantization, quantization.isEnabled,
+       let spec = quantization.defaultSpec ?? quantization.prepackedLayers.values.first?.spec {
+      logger.info(
+        "Applied quantization to layered text encoder (bits=\(spec.bits), group=\(spec.groupSize), mode=\(spec.mode))."
+      )
+    }
   }
 }
 
 // MARK: - Weight Loader Extension
 
 extension QwenLayeredPipeline {
-  /// Build a quantization plan for layered components by merging per-component
-  /// quantization config with any prepacked manifest in the snapshot root.
   static func quantizationPlan(
     forLayeredComponentAt root: URL,
     configRelativePath: String
@@ -555,7 +827,6 @@ extension QwenLayeredPipeline {
 }
 
 extension QwenWeightsLoader {
-  /// Load weights for the layered transformer using the working transformer implementation
   func loadTransformerForLayered(
     fromDirectory directory: URL,
     into transformer: QwenLayeredTransformerV2,
@@ -564,7 +835,6 @@ extension QwenWeightsLoader {
   ) throws {
     let transformerPath = directory.appending(path: "transformer")
 
-    // Collect all safetensors files in the transformer directory
     let fileManager = FileManager.default
     let contents = try fileManager.contentsOfDirectory(
       at: transformerPath,
@@ -577,7 +847,6 @@ extension QwenWeightsLoader {
       throw QwenWeightsLoaderError.noSafetensorsFound(transformerPath)
     }
 
-    // Read all weights and merge
     let readers = try safetensorsFiles.map { try SafeTensorsReader(fileURL: $0) }
     let merged = try WeightsMapping.merge(readers: readers, dtype: nil)
     let availableKeys = Set(merged.keys)
@@ -589,7 +858,6 @@ extension QwenWeightsLoader {
       tensorNameTransform: Self.layeredTransformerTensorName
     )
 
-    // Use the layeredTransformerParameters function with correct key mappings for V2 types
     let parameters = try WeightsMapping.layeredTransformerParameters(
       from: merged,
       configuration: transformer.configuration,

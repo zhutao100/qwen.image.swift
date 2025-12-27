@@ -6,7 +6,9 @@ let package = Package(
   platforms: [.macOS(.v14), .iOS(.v16)],
   products: [
     .library(name: "QwenImage", targets: ["QwenImage"]),
-    .executable(name: "QwenImageCLI", targets: ["QwenImageCLI"])
+    .library(name: "QwenImageRuntime", targets: ["QwenImageRuntime"]),
+    .executable(name: "QwenImageCLI", targets: ["QwenImageCLI"]),
+    .executable(name: "QwenImageApp", targets: ["QwenImageApp"])
   ],
   dependencies: [
     .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.29.1")),
@@ -30,10 +32,24 @@ let package = Package(
       ],
       path: "Sources/QwenImage"
     ),
+    .target(
+      name: "QwenImageRuntime",
+      dependencies: [
+        "QwenImage",
+        .product(name: "MLX", package: "mlx-swift"),
+        .product(name: "Logging", package: "swift-log")
+      ],
+      path: "Sources/QwenImageRuntime"
+    ),
     .executableTarget(
       name: "QwenImageCLI",
-      dependencies: ["QwenImage"],
+      dependencies: ["QwenImage", "QwenImageRuntime"],
       path: "Sources/QwenImageCLI"
+    ),
+    .executableTarget(
+      name: "QwenImageApp",
+      dependencies: ["QwenImage", "QwenImageRuntime"],
+      path: "Sources/QwenImageApp"
     ),
     .testTarget(
       name: "QwenImageTests",

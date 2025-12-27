@@ -232,14 +232,23 @@ public enum QwenSchedulerFactory {
     model: QwenModelConfiguration,
     generation: GenerationParameters
   ) -> (scheduler: QwenFlowMatchScheduler, runtime: QwenRuntimeConfig) {
-    // For edit runs, an optional square editResolution can override the canvas
-    // width/height used for latents and UNet. When nil, fall back to the
-    // requested width/height (text-to-image and legacy behavior).
+    // For edit runs, an optional editResolution can override the canvas
+    // width/height used for latents and UNet. When provided, compute dimensions
+    // that preserve the user's aspect ratio while matching the target resolution area.
+    // When nil, fall back to the requested width/height (text-to-image and legacy behavior).
     let baseWidth: Int
     let baseHeight: Int
     if let editRes = generation.editResolution {
-      baseWidth = editRes
-      baseHeight = editRes
+      // Preserve aspect ratio while targeting editResolution area
+      let targetArea = editRes * editRes
+      let (w, h) = EditSizing.computeDimensions(
+        referenceWidth: generation.width,
+        referenceHeight: generation.height,
+        targetArea: targetArea,
+        multiple: 16
+      )
+      baseWidth = w
+      baseHeight = h
     } else {
       baseWidth = generation.width
       baseHeight = generation.height

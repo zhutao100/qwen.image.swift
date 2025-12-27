@@ -22,16 +22,21 @@ jobs:
       - name: Enable PrepareMetalShaders plugin
         run: defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidation -bool YES
 
-      - name: Build
+      - name: Build CLI
         run: |
           xcodebuild build -scheme QwenImageCLI -configuration Release -destination 'platform=macOS' -derivedDataPath ./dist -skipPackagePluginValidation ENABLE_PLUGIN_PREPAREMLSHADERS=YES CLANG_COVERAGE_MAPPING=NO
+
+      - name: Build App
+        run: |
+          xcodebuild build -scheme QwenImageApp -configuration Release -destination 'platform=macOS' -derivedDataPath ./dist -skipPackagePluginValidation ENABLE_PLUGIN_PREPAREMLSHADERS=YES CLANG_COVERAGE_MAPPING=NO
 
       - name: Prepare Artifacts
         run: |
           cd ./dist/Build/Products/Release
           chmod +x QwenImageCLI
           cp mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib .
-          zip -r qwen-image.macos.arm64.zip QwenImageCLI default.metallib
+          zip -r qwen-image-cli.macos.arm64.zip QwenImageCLI default.metallib
+          zip -r qwen-image-app.macos.arm64.zip QwenImageApp default.metallib
 
       - name: Get current date
         run: echo "CURRENT_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
@@ -46,5 +51,7 @@ jobs:
           draft: false
           prerelease: true
           allowUpdates: true
-          artifacts: ./dist/Build/Products/Release/qwen-image.macos.arm64.zip
+          artifacts: |
+            ./dist/Build/Products/Release/qwen-image-cli.macos.arm64.zip
+            ./dist/Build/Products/Release/qwen-image-app.macos.arm64.zip
           token: ${{ secrets.GITHUB_TOKEN }}
