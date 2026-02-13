@@ -35,7 +35,7 @@ The CLI no longer shells out to Python or `rsync` for quantization tasks. It use
 ## 4. Remaining Technical Debt
 
 ### 4.1. Pipeline Duplication
-We now have `QwenImagePipeline` and `QwenLayeredPipeline`.
+We now have `QwenImagePipeline` and `QwenImageLayeredGeneration`.
 - They share significant logic (LoRA loading, basic scheduling).
 - **Risk**: Fixes in one (e.g., True CFG logic) might not propagate to the other automatically.
 - **Mitigation**: The `QwenImageRuntime` abstracts some of this, but the core duplication remains.
@@ -69,9 +69,12 @@ The `WeightsMapping` logic could potentially be moved to a JSON/YAML configurati
 | `QwenImageRuntime.swift` | **Excellent**. Defines the new architectural boundary clearly. |
 | `TextEncoder.swift` | **Improved**. Vectorization makes it much cleaner and faster. |
 | `QwenImagePipeline.swift` | **Better**. Offloading logic moved to explicit methods, but still large. |
-| `QwenLayeredPipeline.swift` | **New**. Clean implementation, but duplicates some logic. |
+| `QwenImageLayeredGeneration.swift` | **New**. Clean implementation, but duplicates some logic. |
 | `ModelService.swift` | **Good**. proper Actor-based singleton for app state. |
 | `main.swift` (CLI) | **Improved**. Cleaner, pure Swift, better LoRA parsing. |
 
+For up-to-date architecture overview, see [PROJECT_ARCHITECTURE.md](./PROJECT_ARCHITECTURE.md).
+
 ## Conclusion
 The project is moving in the right direction. The focus on "Runtime" vs "Core" is an excellent architectural decision that paves the way for stable applications. The performance work on vectorization shows a deep understanding of the MLX framework.
+| `QwenImageLayeredGeneration.swift` | **New**. Clean implementation, but duplicates some logic. |

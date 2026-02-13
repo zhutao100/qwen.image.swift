@@ -11,4 +11,4 @@
 - For analyzing `.safetensors` file structure, you can use the python script `~/bin/stls.py`
   - use `--format toon` to ouput in the LLM friendly format "TOON"
   - if the script is not present, it's downloadable via `curl https://gist.githubusercontent.com/zhutao100/cc481d2cd248aa8769e1abb3887facc8/raw/89d644c490bcf5386cb81ebcc36c92471f578c60/stls.py > ~/bin/stls.py`
-- If need to inpsect the models used by the project, they are typically available in the default huggingface cache location `~/.cache/huggingface/hub/`.
+- If need to inspect the models used by the project, they are typically available in the default huggingface cache location `~/.cache/huggingface/hub/`.

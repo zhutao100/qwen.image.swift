@@ -1,7 +1,10 @@
 ## 1) Qwen-Image family at a glance
 
+**Note**: This document describes the original Python Diffusers implementation for reference. For Swift-specific implementation, see [PROJECT_ARCHITECTURE.md](./PROJECT_ARCHITECTURE.md).
+
 The **Qwen-Image** family is Qwen’s diffusion-based image generation/editing stack, emphasizing **complex text rendering** (notably strong for Chinese) and **instruction-following edits**. ([Hugging Face][1])
 
+This repository contains a Swift port of these models that runs on Apple Silicon via MLX, supporting text-to-image generation, editing, and layered decomposition. Refer to the [README](../README.md) for usage and [PROJECT_ARCHITECTURE.md](./PROJECT_ARCHITECTURE.md) for implementation details.
 The three variants you called out map cleanly onto three “modes” of use in Diffusers:
 
 | Model                       | Primary task                                                             | Diffusers pipeline class                        |

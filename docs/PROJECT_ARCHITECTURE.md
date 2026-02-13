@@ -98,3 +98,10 @@ Sources/
     ├── Support/        # Logging & Config
     └── Util/           # Math & Image helpers
 ```
+
+## Known Technical Debt
+
+- **Pipeline Duplication**: The core library contains two separate pipeline implementations (`QwenImagePipeline` and `QwenImageLayeredGeneration`) that share significant logic. This duplication increases maintenance burden and risk of inconsistency. Future work should unify common logic into a base pipeline class or protocol.
+- **Weights Mapping**: The `WeightsMapping.swift` file contains a large hardcoded dictionary of key mappings; this is fragile when supporting new model variants. Consider moving to a configuration file.
+
+For a detailed code quality assessment, see [CODE_QUALITY_REPORT.md](./CODE_QUALITY_REPORT.md).

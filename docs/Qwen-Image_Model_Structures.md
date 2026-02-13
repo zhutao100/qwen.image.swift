@@ -1,4 +1,6 @@
 Below is what the **on-repo file layout** looks like for the three major Qwen-Image variants on Hugging Face, and how each piece maps onto a **Diffusers pipeline + Transformers text (and optionally vision) stack**.
+**Note**: This document describes the original Python Diffusers implementation for reference. For Swift-specific implementation, see [PROJECT_ARCHITECTURE.md](./PROJECT_ARCHITECTURE.md).
+ 
 
 ---
 
