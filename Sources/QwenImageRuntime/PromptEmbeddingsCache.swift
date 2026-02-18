@@ -106,7 +106,7 @@ struct PromptEmbeddingsCacheEntry {
 ///   await cache.set(key: key, value: encoding)
 /// }
 /// ```
-public actor PromptEmbeddingsCache {
+public final class PromptEmbeddingsCache {
   private var cache: [PromptEmbeddingsCacheKey: PromptEmbeddingsCacheEntry] = [:]
   private let maxEntries: Int
 

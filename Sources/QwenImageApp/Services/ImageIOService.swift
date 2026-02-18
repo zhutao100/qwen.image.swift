@@ -31,6 +31,25 @@ enum ImageIOService {
     return cgImage
   }
 
+  static func cgImage(from data: Data) throws -> CGImage {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+    else {
+      throw ImageIOError.conversionFailed("Failed to decode CGImage from image data")
+    }
+    return cgImage
+  }
+
+  static func pngData(from nsImage: NSImage) throws -> Data {
+    guard let tiffData = nsImage.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiffData),
+          let pngData = bitmap.representation(using: .png, properties: [:])
+    else {
+      throw ImageIOError.conversionFailed("Failed to encode PNG data from NSImage")
+    }
+    return pngData
+  }
+
   static func cgImageToMLXArray(_ cgImage: CGImage) -> MLXArray {
     let width = cgImage.width
     let height = cgImage.height

@@ -173,8 +173,7 @@ actor ModelService {
       return session
     }
 
-    let pipeline = try await QwenLayeredPipeline.load(from: path, dtype: .bfloat16)
-    layeredPipeline = pipeline
+    let pipeline = try QwenLayeredPipeline.load(from: path, dtype: .bfloat16)
     currentModelId = modelId
     currentRevision = revision
 
@@ -206,18 +205,12 @@ actor ModelService {
       return session
     }
 
-    let pipeline = QwenImagePipeline(config: config)
-    pipeline.setBaseDirectory(path)
-    try pipeline.prepareTokenizer(from: path, maxLength: nil)
-    try pipeline.prepareTextEncoder(from: path)
-    try pipeline.prepareVAE(from: path)
-
-    imagePipeline = pipeline
     currentModelId = modelId
     currentRevision = revision
 
-    let session = ImagePipelineSession(
-      pipeline: pipeline,
+    let session = try ImagePipelineSession(
+      modelPath: path,
+      config: config,
       modelId: modelId,
       revision: revision,
       configuration: configuration
@@ -240,7 +233,7 @@ actor ModelService {
       return cached
     }
 
-    let pipeline = try await QwenLayeredPipeline.load(from: path, dtype: .bfloat16)
+    let pipeline = try QwenLayeredPipeline.load(from: path, dtype: .bfloat16)
     layeredPipeline = pipeline
     loadedMode = .layered
     return pipeline

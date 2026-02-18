@@ -31,22 +31,16 @@
 /// import QwenImage
 /// import QwenImageRuntime
 ///
-/// // Create and configure the core pipeline
-/// let pipeline = QwenImagePipeline(config: .textToImage)
-/// pipeline.setBaseDirectory(modelPath)
-/// try pipeline.prepareTokenizer(from: modelPath)
-/// try pipeline.prepareTextEncoder(from: modelPath)
-///
-/// // Wrap in a session for automatic caching and memory management
-/// let session = ImagePipelineSession(
-///   pipeline: pipeline,
+/// let session = try ImagePipelineSession(
+///   modelPath: modelPath,
+///   config: .textToImage,
 ///   modelId: "Qwen/Qwen-Image",
 ///   configuration: .default  // Releases encoders after encoding
 /// )
 ///
 /// // Generate - embeddings are cached automatically
 /// let params = GenerationParameters(prompt: "A cat", width: 1024, height: 1024, steps: 30)
-/// let pixels = try await session.generate(parameters: params, model: modelConfig)
+/// let pngData = try await session.generatePNG(parameters: params, model: modelConfig)
 /// ```
 ///
 /// ### Layered Image Generation
@@ -56,7 +50,7 @@
 /// import QwenImageRuntime
 ///
 /// // Load the core pipeline
-/// let pipeline = try await QwenLayeredPipeline.load(from: modelPath)
+/// let pipeline = try QwenLayeredPipeline.load(from: modelPath)
 ///
 /// // Wrap in a session
 /// let session = LayeredPipelineSession(
@@ -70,7 +64,7 @@
 ///
 /// // Generate - captions are cached per-image
 /// let params = LayeredGenerationParameters(layers: 4, resolution: 640)
-/// let layers = try await session.generate(
+/// let layerPNGs = try await session.generatePNGs(
 ///   imageData: imageData,
 ///   image: imageArray,
 ///   parameters: params

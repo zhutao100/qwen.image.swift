@@ -12,7 +12,7 @@ public typealias PipelineImage = AnyObject
 
 // LoadOptions removed; quantization will be added in a future revision.
 
-public enum QwenImageConfig {
+public enum QwenImageConfig: Sendable {
   case textToImage
   case imageEditing
 }

@@ -210,8 +210,33 @@ public final class QwenImagePipeline {
   private var pendingLoraURL: URL?
   private var pendingLoraScale: Float = 1.0
 
+  private final class ProgressBridge: @unchecked Sendable {
+    weak var pipeline: QwenImagePipeline?
+
+    init(_ pipeline: QwenImagePipeline) {
+      self.pipeline = pipeline
+    }
+
+    func publish(_ progress: HubSnapshotProgress) {
+      pipeline?.publish(progress: progress)
+    }
+  }
+
   public init(config: QwenImageConfig) {
     self.config = config
+  }
+
+  public static func load(
+    from directory: URL,
+    config: QwenImageConfig,
+    maxLength: Int? = nil
+  ) throws -> QwenImagePipeline {
+    let pipeline = QwenImagePipeline(config: config)
+    pipeline.setBaseDirectory(directory)
+    try pipeline.prepareTokenizer(from: directory, maxLength: maxLength)
+    try pipeline.prepareTextEncoder(from: directory)
+    try pipeline.prepareVAE(from: directory)
+    return pipeline
   }
 
   public func setBaseDirectory(_ directory: URL) {
@@ -1771,16 +1796,24 @@ public final class QwenImagePipeline {
   }
 
   private func loadTokenizer(from snapshot: HubSnapshot) async throws {
-    let directory = try await snapshot.prepare { [weak self] progress in
-      self?.publish(progress: progress)
+    let directory: URL
+    if progressRequested {
+      let bridge = ProgressBridge(self)
+      directory = try await snapshot.prepare(progressHandler: bridge.publish)
+    } else {
+      directory = try await snapshot.prepare()
     }
     let tokenizer = try QwenTokenizer.load(from: directory)
     self.tokenizer = tokenizer
   }
 
   private func loadTextEncoder(from snapshot: HubSnapshot) async throws {
-    let directory = try await snapshot.prepare { [weak self] progress in
-      self?.publish(progress: progress)
+    let directory: URL
+    if progressRequested {
+      let bridge = ProgressBridge(self)
+      directory = try await snapshot.prepare(progressHandler: bridge.publish)
+    } else {
+      directory = try await snapshot.prepare()
     }
     let encoder = QwenTextEncoder()
     let configURL = directory.appending(path: "text_encoder").appending(path: "config.json")
@@ -1804,8 +1837,12 @@ public final class QwenImagePipeline {
     from snapshot: HubSnapshot,
     configuration: QwenTransformerConfiguration
   ) async throws {
-    let directory = try await snapshot.prepare { [weak self] progress in
-      self?.publish(progress: progress)
+    let directory: URL
+    if progressRequested {
+      let bridge = ProgressBridge(self)
+      directory = try await snapshot.prepare(progressHandler: bridge.publish)
+    } else {
+      directory = try await snapshot.prepare()
     }
     let transformer = QwenTransformer(configuration: configuration)
     let dtype = preferredWeightDType()
@@ -1833,8 +1870,12 @@ public final class QwenImagePipeline {
     from snapshot: HubSnapshot,
     configuration: QwenTransformerConfiguration
   ) async throws {
-    let directory = try await snapshot.prepare { [weak self] progress in
-      self?.publish(progress: progress)
+    let directory: URL
+    if progressRequested {
+      let bridge = ProgressBridge(self)
+      directory = try await snapshot.prepare(progressHandler: bridge.publish)
+    } else {
+      directory = try await snapshot.prepare()
     }
     let unet = QwenUNet(configuration: configuration)
     let dtype = preferredWeightDType()
@@ -1861,8 +1902,11 @@ public final class QwenImagePipeline {
   private func loadVAE(from snapshot: HubSnapshot) async throws {
     let vae = QwenVAE()
     let dtype = preferredWeightDType()
-    try await weightsLoader.loadVAE(from: snapshot, into: vae, dtype: dtype) { [weak self] progress in
-      self?.publish(progress: progress)
+    if progressRequested {
+      let bridge = ProgressBridge(self)
+      try await weightsLoader.loadVAE(from: snapshot, into: vae, dtype: dtype, progress: bridge.publish)
+    } else {
+      try await weightsLoader.loadVAE(from: snapshot, into: vae, dtype: dtype, progress: nil)
     }
     self.vae = vae
   }

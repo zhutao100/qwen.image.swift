@@ -151,26 +151,33 @@ final class LayeredViewModel {
   // MARK: - Generation
 
   func generate() {
-    guard let inputImage else {
-      generationState = .error("No input image selected")
-      return
-    }
+	  guard let inputImage else {
+	    generationState = .error("No input image selected")
+	    return
+	  }
 
     guard let appState else {
       generationState = .error("App state not available")
       return
     }
 
-    guard let modelPath = appState.modelPath(for: .layered) else {
-      generationState = .error("Layered model not downloaded. Please download it first.")
-      return
-    }
+	  guard let modelPath = appState.modelPath(for: .layered) else {
+	    generationState = .error("Layered model not downloaded. Please download it first.")
+	    return
+	  }
 
-    let modelService = appState.modelService
-    let loraPath = selectedLoRAPath
-    let loraScaleValue = loraScale
-    let layerCount = layers
-    let resolutionValue = resolution
+	  let inputImageData: Data
+	  do {
+	    inputImageData = try ImageIOService.pngData(from: inputImage)
+	  } catch {
+	    generationState = .error(error.localizedDescription)
+	    return
+	  }
+
+	  let loraPath = selectedLoRAPath
+	  let loraScaleValue = loraScale
+	  let layerCount = layers
+	  let resolutionValue = resolution
     let stepCount = steps
     let cfgScale = trueCFGScale
     let cfgNorm = cfgNormalize
@@ -186,15 +193,15 @@ final class LayeredViewModel {
 
       do {
         logger.info("Task \(taskId): Loading pipeline from \(modelPath.path)")
-        let pipeline = try await modelService.loadLayeredPipeline(from: modelPath)
+        let pipeline = try QwenLayeredPipeline.load(from: modelPath, dtype: .bfloat16)
         logger.info("Task \(taskId): Pipeline loaded successfully")
 
-        if let loraPath {
-          try await modelService.applyLoRA(to: pipeline, from: loraPath, scale: loraScaleValue)
-        }
+	        if let loraPath {
+	          try pipeline.applyLora(from: loraPath, scale: loraScaleValue)
+	        }
 
-        let cgImage = try ImageIOService.cgImage(from: inputImage)
-        let inputArray = ImageIOService.cgImageToMLXArray(cgImage)
+	        let cgImage = try ImageIOService.cgImage(from: inputImageData)
+	        let inputArray = ImageIOService.cgImageToMLXArray(cgImage)
 
         let actualSeed = randomSeed ? UInt64.random(in: 0...UInt64.max) : seedValue
         let params = LayeredGenerationParameters(

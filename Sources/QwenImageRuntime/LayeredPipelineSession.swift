@@ -70,7 +70,7 @@ public struct LayeredPipelineSessionConfiguration: Sendable {
 ///
 /// Usage:
 /// ```swift
-/// let pipeline = try await QwenLayeredPipeline.load(from: modelPath)
+/// let pipeline = try QwenLayeredPipeline.load(from: modelPath)
 ///
 /// let session = LayeredPipelineSession(
 ///   pipeline: pipeline,
@@ -83,7 +83,7 @@ public struct LayeredPipelineSessionConfiguration: Sendable {
 /// let imageArray = ... // Convert to MLXArray
 ///
 /// let params = LayeredGenerationParameters(layers: 4, resolution: 640)
-/// let layers = try await session.generate(
+/// let layerPNGs = try await session.generatePNGs(
 ///   imageData: imageData,
 ///   image: imageArray,
 ///   parameters: params
@@ -185,6 +185,23 @@ public actor LayeredPipelineSession {
     )
   }
 
+  #if canImport(CoreGraphics)
+    public func generatePNGs(
+      imageData: Data,
+      image: MLXArray,
+      parameters: LayeredGenerationParameters,
+      progress: ((Int, Int, Float) -> Void)? = nil
+    ) async throws -> [Data] {
+      let layers = try await generate(
+        imageData: imageData,
+        image: image,
+        parameters: parameters,
+        progress: progress
+      )
+      return try layers.map { try QwenImageIO.pngData(from: $0) }
+    }
+  #endif
+
   /// Generate layer images from an image file URL.
   ///
   /// Convenience method that loads image data and converts to MLXArray.
@@ -225,7 +242,7 @@ public actor LayeredPipelineSession {
     dtype: DType
   ) async throws -> (LayeredPromptEncoding, LayeredPromptEncoding?) {
     // Check cache first
-    if let cached = await captionCache.get(key: cacheKey) {
+    if let cached = captionCache.get(key: cacheKey) {
       logger.debug("Cache hit for caption encoding")
       return cached
     }
@@ -242,7 +259,7 @@ public actor LayeredPipelineSession {
     }
 
     // Cache the encodings
-    await captionCache.set(
+    captionCache.set(
       key: cacheKey,
       encoding: promptEncoding,
       negativeEncoding: negativeEncoding
@@ -284,7 +301,7 @@ public actor LayeredPipelineSession {
 
   /// Clear all cached caption embeddings.
   public func clearCache() async {
-    await captionCache.invalidateAll()
+    captionCache.invalidateAll()
     logger.debug("Caption cache cleared")
   }
 
@@ -294,19 +311,17 @@ public actor LayeredPipelineSession {
     let hash = configuration.useFastImageHash
       ? ImageHashUtility.fastHash(from: imageData)
       : ImageHashUtility.sha256Hash(from: imageData)
-    await captionCache.invalidateForImage(hash)
+    captionCache.invalidateForImage(hash)
   }
 
   /// Invalidate cache entries for the current model.
   public func invalidateModelCache() async {
-    await captionCache.invalidateForModel(modelId)
+    captionCache.invalidateForModel(modelId)
   }
 
   /// The current number of cached captions.
   public var cacheCount: Int {
-    get async {
-      await captionCache.count
-    }
+    captionCache.count
   }
 
   // MARK: - Status
@@ -330,7 +345,7 @@ public actor LayeredPipelineSession {
   public func applyLora(from url: URL, scale: Float = 1.0) async throws {
     try pipeline.applyLora(from: url, scale: scale)
     // Invalidate cache since model weights changed
-    await captionCache.invalidateAll()
+    captionCache.invalidateAll()
     logger.info("Applied LoRA and invalidated cache")
   }
 }
@@ -339,7 +354,7 @@ public actor LayeredPipelineSession {
 
 extension LayeredPipelineSession {
   /// Check if an encoding is cached for the given parameters.
-  nonisolated public func hasCachedEncoding(
+  public func hasCachedEncoding(
     imageData: Data,
     prompt: String,
     negativePrompt: String?
@@ -356,6 +371,6 @@ extension LayeredPipelineSession {
       imageHash: hash
     )
 
-    return await captionCache.contains(key: cacheKey)
+    return captionCache.contains(key: cacheKey)
   }
 }

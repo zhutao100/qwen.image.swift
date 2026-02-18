@@ -3,28 +3,40 @@ import MLX
 import MLXNN
 
 public enum LinearLayerRegistry {
-  private static var storage: [String: Set<String>] = [:]
-  private static var componentStack: [String] = []
+  final class State: @unchecked Sendable {
+    var storage: [String: Set<String>] = [:]
+    var componentStack: [String] = []
+  }
+
+  @TaskLocal private static var state: State?
 
   public static func withComponent<T>(
     _ component: String,
     _ block: () throws -> T
   ) rethrows -> T {
-    componentStack.append(component)
-    defer { componentStack.removeLast() }
-    return try block()
+    if let state {
+      state.componentStack.append(component)
+      defer { state.componentStack.removeLast() }
+      return try block()
+    }
+
+    let state = State()
+    return try $state.withValue(state) {
+      state.componentStack.append(component)
+      defer { state.componentStack.removeLast() }
+      return try block()
+    }
   }
 
   static func record(_ tensorBase: String) {
-    guard let component = componentStack.last else { return }
-    var set = storage[component] ?? Set<String>()
-    set.insert(tensorBase)
-    storage[component] = set
+    guard let state, let component = state.componentStack.last else { return }
+    state.storage[component, default: []].insert(tensorBase)
   }
 
   public static func snapshotAndReset() -> [String: [String]] {
-    let result = storage.mapValues { Array($0).sorted() }
-    storage.removeAll()
+    guard let state else { return [:] }
+    let result = state.storage.mapValues { Array($0).sorted() }
+    state.storage.removeAll()
     return result
   }
 }

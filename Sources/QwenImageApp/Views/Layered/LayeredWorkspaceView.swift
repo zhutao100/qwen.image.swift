@@ -542,28 +542,32 @@ import UniformTypeIdentifiers
 struct LayerExportDocument: FileDocument {
   static var readableContentTypes: [UTType] { [.folder] }
 
-  let layers: [NSImage]
+  private let layerPNGs: [Data]
 
   init(layers: [NSImage]) {
-    self.layers = layers
+    layerPNGs = layers.compactMap { layer in
+      guard let tiffData = layer.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: tiffData),
+            let pngData = bitmap.representation(using: .png, properties: [:])
+      else {
+        return nil
+      }
+      return pngData
+    }
   }
 
   init(configuration: ReadConfiguration) throws {
-    layers = []
+    layerPNGs = []
   }
 
   func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
     let directoryWrapper = FileWrapper(directoryWithFileWrappers: [:])
 
-    for (index, layer) in layers.enumerated() {
-      if let tiffData = layer.tiffRepresentation,
-         let bitmap = NSBitmapImageRep(data: tiffData),
-         let pngData = bitmap.representation(using: .png, properties: [:]) {
-        let filename = "\(UUID().uuidString)_layer\(index + 1).png"
-        let fileWrapper = FileWrapper(regularFileWithContents: pngData)
-        fileWrapper.preferredFilename = filename
-        directoryWrapper.addFileWrapper(fileWrapper)
-      }
+    for (index, pngData) in layerPNGs.enumerated() {
+      let filename = "\(UUID().uuidString)_layer\(index + 1).png"
+      let fileWrapper = FileWrapper(regularFileWithContents: pngData)
+      fileWrapper.preferredFilename = filename
+      directoryWrapper.addFileWrapper(fileWrapper)
     }
 
     return directoryWrapper

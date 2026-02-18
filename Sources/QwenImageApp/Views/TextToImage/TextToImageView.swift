@@ -356,19 +356,18 @@ struct TextToImageView: View {
 struct ImageExportDocument: FileDocument {
   static var readableContentTypes: [UTType] { [.png, .jpeg] }
 
-  let image: NSImage?
+  private let tiffData: Data?
 
   init(image: NSImage?) {
-    self.image = image
+    tiffData = image?.tiffRepresentation
   }
 
   init(configuration: ReadConfiguration) throws {
-    image = nil
+    tiffData = nil
   }
 
   func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-    guard let image = image,
-          let tiffData = image.tiffRepresentation,
+    guard let tiffData,
           let bitmap = NSBitmapImageRep(data: tiffData)
     else {
       throw CocoaError(.fileWriteUnknown)

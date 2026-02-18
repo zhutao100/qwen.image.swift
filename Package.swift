@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -16,6 +16,10 @@ let package = Package(
       url: "https://github.com/huggingface/swift-transformers",
       .upToNextMinor(from: "0.1.21")
     ),
+    .package(
+      url: "https://github.com/huggingface/swift-huggingface.git",
+      .upToNextMinor(from: "0.7.0")
+    ),
     .package(url: "https://github.com/apple/swift-log.git", from: "1.6.4")
   ],
   targets: [
@@ -28,6 +32,7 @@ let package = Package(
         .product(name: "MLXOptimizers", package: "mlx-swift"),
         .product(name: "MLXRandom", package: "mlx-swift"),
         .product(name: "Transformers", package: "swift-transformers"),
+        .product(name: "HuggingFace", package: "swift-huggingface"),
         .product(name: "Logging", package: "swift-log")
       ],
       path: "Sources/QwenImage"

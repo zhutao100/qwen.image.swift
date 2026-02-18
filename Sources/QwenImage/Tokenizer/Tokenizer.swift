@@ -21,7 +21,7 @@ public struct QwenTokenBatch {
 }
 
 public final class QwenTokenizer {
-  private let encodeFunction: @Sendable (String) -> [Int]
+  private let encodeFunction: (String) -> [Int]
   private let prefixTokens: [Int]
   private let suffixTokens: [Int]
 
@@ -43,7 +43,7 @@ public final class QwenTokenizer {
     imageTokenId: Int? = nil,
     visionStartTokenId: Int? = nil,
     visionEndTokenId: Int? = nil,
-    encode: @escaping @Sendable (String) -> [Int]
+    encode: @escaping (String) -> [Int]
   ) {
     self.padTokenId = padTokenId
     self.maxLength = maxLength
@@ -57,8 +57,7 @@ public final class QwenTokenizer {
 
   public static func load(
     from directory: URL,
-    maxLengthOverride: Int? = nil,
-    hubApi: HubApi = .shared
+    maxLengthOverride: Int? = nil
   ) throws -> QwenTokenizer {
     let tokenizerDirectory = resolveTokenizerDirectory(directory)
     let tokenizerConfigURL = tokenizerDirectory.appending(path: "tokenizer_config.json")
@@ -71,7 +70,10 @@ public final class QwenTokenizer {
       throw QwenTokenizerError.fileNotFound(tokenizerConfigURL)
     }
 
-    let tokenizerConfig = try hubApi.configuration(fileURL: tokenizerConfigURL)
+    let tokenizerConfig = try JSONDecoder().decode(
+      Config.self,
+      from: Data(contentsOf: tokenizerConfigURL)
+    )
     let addedTokensURL = tokenizerDirectory.appending(path: "added_tokens.json")
     var addedTokens: [String: Int] = [:]
     if FileManager.default.fileExists(atPath: addedTokensURL.path) {
@@ -87,7 +89,10 @@ public final class QwenTokenizer {
 
     let tokenizer: Tokenizer
     if FileManager.default.fileExists(atPath: tokenizerDataURL.path) {
-      let tokenizerData = try hubApi.configuration(fileURL: tokenizerDataURL)
+      let tokenizerData = try JSONDecoder().decode(
+        Config.self,
+        from: Data(contentsOf: tokenizerDataURL)
+      )
       tokenizer = try AutoTokenizer.from(tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
     } else {
 

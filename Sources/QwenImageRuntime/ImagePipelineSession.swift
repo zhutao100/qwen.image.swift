@@ -60,19 +60,15 @@ public struct ImagePipelineSessionConfiguration: Sendable {
 ///
 /// Usage:
 /// ```swift
-/// let pipeline = QwenImagePipeline(config: .textToImage)
-/// pipeline.setBaseDirectory(modelPath)
-/// try pipeline.prepareTokenizer(from: modelPath)
-/// try pipeline.prepareTextEncoder(from: modelPath)
-///
-/// let session = ImagePipelineSession(
-///   pipeline: pipeline,
+/// let session = try ImagePipelineSession(
+///   modelPath: modelPath,
+///   config: .textToImage,
 ///   modelId: "Qwen/Qwen-Image",
 ///   revision: "main"
 /// )
 ///
 /// let params = GenerationParameters(prompt: "A cat", width: 1024, height: 1024, steps: 30)
-/// let pixels = try await session.generate(parameters: params, model: modelConfig)
+/// let pngData = try await session.generatePNG(parameters: params, model: modelConfig)
 /// ```
 public actor ImagePipelineSession {
   private let pipeline: QwenImagePipeline
@@ -84,17 +80,19 @@ public actor ImagePipelineSession {
 
   /// Create a new session wrapping a pipeline.
   /// - Parameters:
-  ///   - pipeline: The pipeline to wrap. Should have tokenizer and text encoder loaded.
+  ///   - modelPath: The model snapshot directory.
+  ///   - config: The pipeline configuration (text-to-image vs image editing).
   ///   - modelId: Model identifier for cache keys.
   ///   - revision: Model revision for cache keys.
   ///   - configuration: Session configuration.
   public init(
-    pipeline: QwenImagePipeline,
+    modelPath: URL,
+    config: QwenImageConfig,
     modelId: String,
     revision: String = "main",
     configuration: ImagePipelineSessionConfiguration = .default
-  ) {
-    self.pipeline = pipeline
+  ) throws {
+    self.pipeline = try QwenImagePipeline.load(from: modelPath, config: config)
     self.modelId = modelId
     self.revision = revision
     self.configuration = configuration
@@ -153,6 +151,23 @@ public actor ImagePipelineSession {
     )
   }
 
+  #if canImport(CoreGraphics)
+    public func generatePNG(
+      parameters: GenerationParameters,
+      model: QwenModelConfiguration,
+      maxPromptLength: Int? = nil,
+      seed: UInt64? = nil
+    ) async throws -> Data {
+      let pixels = try await generate(
+        parameters: parameters,
+        model: model,
+        maxPromptLength: maxPromptLength,
+        seed: seed
+      )
+      return try QwenImageIO.pngData(from: pixels)
+    }
+  #endif
+
   // MARK: - Encoding
 
   /// Get or compute guidance encoding with caching.
@@ -176,7 +191,7 @@ public actor ImagePipelineSession {
     )
 
     // Check cache first
-    if let cached = await embeddingsCache.get(key: cacheKey) {
+    if let cached = embeddingsCache.get(key: cacheKey) {
       logger.debug("Cache hit for prompt encoding")
       return cached
     }
@@ -190,7 +205,7 @@ public actor ImagePipelineSession {
       maxLength: maxLength
     )
 
-    await embeddingsCache.set(key: cacheKey, value: encoding)
+    embeddingsCache.set(key: cacheKey, value: encoding)
     return encoding
   }
 
@@ -226,20 +241,18 @@ public actor ImagePipelineSession {
 
   /// Clear all cached prompt embeddings.
   public func clearCache() async {
-    await embeddingsCache.invalidateAll()
+    embeddingsCache.invalidateAll()
     logger.debug("Embeddings cache cleared")
   }
 
   /// Invalidate cache entries for the current model.
   public func invalidateModelCache() async {
-    await embeddingsCache.invalidateForModel(modelId, revision: revision)
+    embeddingsCache.invalidateForModel(modelId, revision: revision)
   }
 
   /// The current number of cached embeddings.
   public var cacheCount: Int {
-    get async {
-      await embeddingsCache.count
-    }
+    embeddingsCache.count
   }
 
   // MARK: - Status
@@ -275,7 +288,7 @@ public actor ImagePipelineSession {
 extension ImagePipelineSession {
   /// Synchronous wrapper for cache lookup (non-isolated).
   /// Use this when you need to check the cache without async context.
-  nonisolated public func hasCachedEncoding(
+  public func hasCachedEncoding(
     prompt: String,
     negativePrompt: String?,
     maxLength: Int
@@ -287,6 +300,6 @@ extension ImagePipelineSession {
       prompt: prompt,
       negativePrompt: negativePrompt
     )
-    return await embeddingsCache.contains(key: cacheKey)
+    return embeddingsCache.contains(key: cacheKey)
   }
 }

@@ -136,6 +136,7 @@ The transformer processes text and image streams jointly:
 
 - **mlx-swift** (0.29.1+): Core ML array operations with Metal acceleration
 - **swift-transformers** (0.1.21+): Tokenizer support
+- **swift-huggingface** (0.7.0+): Hugging Face Hub downloads + cache compatibility
 - **swift-log**: Logging framework
 
 ## Environment Variables

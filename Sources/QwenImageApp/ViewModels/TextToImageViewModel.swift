@@ -1,9 +1,6 @@
 import Foundation
 import SwiftUI
 import QwenImage
-import QwenImageRuntime
-import MLX
-import Combine
 
 @Observable @MainActor
 final class TextToImageViewModel {
@@ -34,7 +31,6 @@ final class TextToImageViewModel {
     selectedLoRAPath = kDefaultLightningLoRAPath
   }
 
-  private var progressCancellable: AnyCancellable?
   var appState: AppState?
 
   func generate() {
@@ -53,7 +49,6 @@ final class TextToImageViewModel {
       return
     }
 
-    let modelService = appState.modelService
     let promptText = prompt
     let negPromptText = negativePrompt.isEmpty ? nil : negativePrompt
     let widthValue = width
@@ -71,23 +66,7 @@ final class TextToImageViewModel {
 
     generationTask = Task.detached { [weak self] in
       do {
-        let sessionConfig = ImagePipelineSessionConfiguration(
-          releaseEncodersAfterEncoding: unloadEncoder,
-          maxCachedEmbeddings: 10,
-          gpuCacheLimit: nil
-        )
-
-        let session = try await modelService.loadImageSession(
-          from: modelPath,
-          config: .textToImage,
-          configuration: sessionConfig
-        )
-
-        // TODO: Add LoRA support to session API
-        let pipeline = try await modelService.loadImagePipeline(
-          from: modelPath,
-          config: .textToImage
-        )
+        let pipeline = try QwenImagePipeline.load(from: modelPath, config: .textToImage)
         if let url = loraURL {
           pipeline.setPendingLora(from: url, scale: 1.0)
         }
@@ -108,33 +87,37 @@ final class TextToImageViewModel {
 
         await MainActor.run { [weak self] in
           self?.generationState = .generating(step: 0, total: stepCount, progress: 0)
-          self?.progressCancellable = pipeline.progress?.receive(on: DispatchQueue.main).sink { [weak self] info in
-            guard let self else { return }
-            let progress = Float(info.step) / Float(info.total)
-            self.generationState = .generating(step: info.step, total: info.total, progress: progress)
-          }
         }
 
-        let pixels = try await session.generate(
+        let promptLength = modelConfig.maxSequenceLength
+        let encoding = try pipeline.encodeGuidancePrompts(
+          prompt: promptText,
+          negativePrompt: negPromptText,
+          maxLength: promptLength
+        )
+        if unloadEncoder {
+          pipeline.releaseEncoders()
+        }
+        let pixels = try pipeline.generatePixels(
           parameters: params,
           model: modelConfig,
+          guidanceEncoding: encoding,
           seed: actualSeed
         )
 
         if Task.isCancelled {
           await MainActor.run { [weak self] in
-            self?.progressCancellable = nil
             self?.generationState = .idle
           }
           return
         }
 
         let image = try pipeline.makeImage(from: pixels)
+        let pngData = try ImageIOService.pngData(from: image)
 
         await MainActor.run { [weak self] in
           guard let self else { return }
-          self.progressCancellable = nil
-          self.generatedImage = image
+          self.generatedImage = NSImage(data: pngData)
           self.generationState = .complete
           if randomSeed {
             self.seed = actualSeed
@@ -144,7 +127,6 @@ final class TextToImageViewModel {
       } catch {
         await MainActor.run { [weak self] in
           guard let self else { return }
-          self.progressCancellable = nil
           if Task.isCancelled {
             self.generationState = .idle
           } else {
@@ -158,7 +140,6 @@ final class TextToImageViewModel {
   func cancelGeneration() {
     generationTask?.cancel()
     generationTask = nil
-    progressCancellable = nil
     generationState = .idle
   }
 

@@ -1,9 +1,8 @@
 import Foundation
 import SwiftUI
 import QwenImage
-import QwenImageRuntime
 import MLX
-import Combine
+import CoreGraphics
 
 @Observable @MainActor
 final class EditingViewModel {
@@ -32,7 +31,6 @@ final class EditingViewModel {
     }
   }
   private var generationTask: Task<Void, Never>?
-  private var progressCancellable: AnyCancellable?
   var appState: AppState?
 
   init() {
@@ -78,8 +76,13 @@ final class EditingViewModel {
       return
     }
 
-    let modelService = appState.modelService
-    let refImages = referenceImages
+    let referenceImageData: [Data]
+    do {
+      referenceImageData = try referenceImages.map { try ImageIOService.pngData(from: $0) }
+    } catch {
+      generationState = .error(error.localizedDescription)
+      return
+    }
     let promptText = prompt
     let negPromptText = negativePrompt.isEmpty ? nil : negativePrompt
     let widthValue = width
@@ -97,24 +100,13 @@ final class EditingViewModel {
 
     generationTask = Task.detached { [weak self] in
       do {
-        let pipeline = try await modelService.loadImagePipeline(
-          from: modelPath,
-          config: .imageEditing
-        )
+        let pipeline = try QwenImagePipeline.load(from: modelPath, config: .imageEditing)
 
         if let url = loraURL {
           pipeline.setPendingLora(from: url, scale: 1.0)
         }
 
-        var cgImages: [CGImage] = []
-        for nsImage in refImages {
-          let cgImage = try ImageIOService.cgImage(from: nsImage)
-          cgImages.append(cgImage)
-        }
-
-        guard !cgImages.isEmpty else {
-          throw EditingError.invalidReferenceImages
-        }
+        let cgImages = try referenceImageData.map { try ImageIOService.cgImage(from: $0) }
 
         let actualSeed = randomSeed ? UInt64.random(in: 0...UInt64.max) : seedValue
         let params = GenerationParameters(
@@ -133,11 +125,6 @@ final class EditingViewModel {
 
         await MainActor.run { [weak self] in
           self?.generationState = .generating(step: 0, total: stepCount, progress: 0)
-          self?.progressCancellable = pipeline.progress?.receive(on: DispatchQueue.main).sink { [weak self] info in
-            guard let self else { return }
-            let progress = Float(info.step) / Float(info.total)
-            self.generationState = .generating(step: info.step, total: info.total, progress: progress)
-          }
         }
 
         let pixels: MLXArray
@@ -161,18 +148,17 @@ final class EditingViewModel {
 
         if Task.isCancelled {
           await MainActor.run { [weak self] in
-            self?.progressCancellable = nil
             self?.generationState = .idle
           }
           return
         }
 
         let image = try pipeline.makeImage(from: pixels)
+        let pngData = try ImageIOService.pngData(from: image)
 
         await MainActor.run { [weak self] in
           guard let self else { return }
-          self.progressCancellable = nil
-          self.editedImage = image
+          self.editedImage = NSImage(data: pngData)
           self.generationState = .complete
           if randomSeed {
             self.seed = actualSeed
@@ -182,7 +168,6 @@ final class EditingViewModel {
       } catch {
         await MainActor.run { [weak self] in
           guard let self else { return }
-          self.progressCancellable = nil
           if Task.isCancelled {
             self.generationState = .idle
           } else {
@@ -196,7 +181,6 @@ final class EditingViewModel {
   func cancelGeneration() {
     generationTask?.cancel()
     generationTask = nil
-    progressCancellable = nil
     generationState = .idle
   }
 

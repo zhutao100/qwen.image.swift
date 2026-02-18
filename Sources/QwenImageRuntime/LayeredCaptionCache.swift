@@ -183,7 +183,7 @@ struct LayeredCaptionCacheEntry {
 ///   await cache.set(key: key, encoding: encoding)
 /// }
 /// ```
-public actor LayeredCaptionCache {
+public final class LayeredCaptionCache {
   private var cache: [LayeredCaptionCacheKey: LayeredCaptionCacheEntry] = [:]
   private let maxEntries: Int
 

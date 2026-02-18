@@ -1,5 +1,5 @@
 import Foundation
-import Hub
+import HuggingFace
 
 /// Convenience utilities for resolving Qwen model snapshots from Hugging Face Hub.
 ///
@@ -45,7 +45,7 @@ public enum QwenModelRepository {
     return HubSnapshotOptions(
       repoId: repoId,
       revision: revision,
-      repoType: Hub.RepoType.models,
+      repoKind: Repo.Kind.model,
       patterns: patterns,
       cacheDirectory: cacheDirectory,
       hfToken: hfToken,

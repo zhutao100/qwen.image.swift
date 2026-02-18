@@ -3,14 +3,17 @@ import MLX
 
 #if canImport(CoreGraphics)
 import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 
 enum QwenImageIOError: Error {
   case unsupportedPixelFormat
   case invalidArrayShape
   case resizeFailed
+  case encodeFailed
 }
 
-enum QwenImageIO {
+public enum QwenImageIO {
   static func resizedCGImage(
     from image: CGImage,
     width: Int,
@@ -45,7 +48,7 @@ enum QwenImageIO {
     return scaled
   }
 
-  static func array(
+  public static func array(
     from image: CGImage,
     addBatchDimension: Bool = true,
     dtype: DType = .float32
@@ -106,7 +109,7 @@ enum QwenImageIO {
     return MLXArray(floats, shape).asType(dtype)
   }
 
-  static func image(from array: MLXArray) throws -> CGImage {
+  public static func image(from array: MLXArray) throws -> CGImage {
     var tensor = array
     precondition(tensor.ndim == 3 || (tensor.ndim == 4 && tensor.dim(0) == 1))
     if tensor.ndim == 4 {
@@ -163,6 +166,28 @@ enum QwenImageIO {
     }
 
     return image
+  }
+
+  public static func pngData(from cgImage: CGImage) throws -> Data {
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(
+      data as CFMutableData,
+      UTType.png.identifier as CFString,
+      1,
+      nil
+    ) else {
+      throw QwenImageIOError.encodeFailed
+    }
+    CGImageDestinationAddImage(destination, cgImage, nil)
+    guard CGImageDestinationFinalize(destination) else {
+      throw QwenImageIOError.encodeFailed
+    }
+    return data as Data
+  }
+
+  public static func pngData(from array: MLXArray) throws -> Data {
+    let cgImage = try image(from: array)
+    return try pngData(from: cgImage)
   }
 
   static func normalizeForEncoder(_ image: MLXArray) -> MLXArray {

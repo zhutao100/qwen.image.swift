@@ -113,7 +113,7 @@ public class QwenLayeredPipeline {
     logger.info("QwenLayeredPipeline initialized")
   }
 
-  public static func load(from path: URL, dtype: DType = .bfloat16) async throws -> QwenLayeredPipeline {
+  public static func load(from path: URL, dtype: DType = .bfloat16) throws -> QwenLayeredPipeline {
     let pipeline = QwenLayeredPipeline()
     let loader = QwenWeightsLoader()
 

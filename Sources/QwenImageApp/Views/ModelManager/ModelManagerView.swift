@@ -1,6 +1,5 @@
 import SwiftUI
 import QwenImage
-import Hub
 
 @MainActor
 struct ModelManagerView: View {

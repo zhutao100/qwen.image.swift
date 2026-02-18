@@ -1,11 +1,8 @@
 import Darwin
-import Dispatch
 import Foundation
 import Combine
 import Logging
 import MLX
-import MLXNN
-import MLXRandom
 import QwenImage
 import QwenImageRuntime
 import Metal
@@ -60,20 +57,22 @@ struct FileLogHandler: LogHandler {
   }
 }
 
-LoggingSystem.bootstrap { label in
-  let env = ProcessInfo.processInfo.environment
-  let levelString = env["QWEN_IMAGE_LOG_LEVEL"]?.lowercased() ?? "info"
-  let level = Logger.Level(rawValue: levelString) ?? .info
+private func bootstrapLogging() {
+  LoggingSystem.bootstrap { label in
+    let env = ProcessInfo.processInfo.environment
+    let levelString = env["QWEN_IMAGE_LOG_LEVEL"]?.lowercased() ?? "info"
+    let level = Logger.Level(rawValue: levelString) ?? .info
 
-  var stderrHandler = StreamLogHandler.standardError(label: label)
-  stderrHandler.logLevel = level
+    var stderrHandler = StreamLogHandler.standardError(label: label)
+    stderrHandler.logLevel = level
 
-  if let logPath = env["QWEN_IMAGE_LOG_FILE"] {
-    let fileURL = URL(fileURLWithPath: logPath)
-    let fileHandler = FileLogHandler(label: label, fileURL: fileURL, level: level)
-    return MultiplexLogHandler([stderrHandler, fileHandler])
-  } else {
-    return stderrHandler
+    if let logPath = env["QWEN_IMAGE_LOG_FILE"] {
+      let fileURL = URL(fileURLWithPath: logPath)
+      let fileHandler = FileLogHandler(label: label, fileURL: fileURL, level: level)
+      return MultiplexLogHandler([stderrHandler, fileHandler])
+    } else {
+      return stderrHandler
+    }
   }
 }
 
@@ -84,12 +83,10 @@ import UIKit
 #endif
 
 struct QwenImageCLIEntry {
-  static var logger: Logger = {
-    var logger = Logger(label: "qwen.image.cli")
-    logger.logLevel = .info
-    return logger
+  static let logger: Logger = {
+    Logger(label: "qwen.image.cli")
   }()
-  static func run() throws {
+  static func run() async throws {
     if let dev = MTLCreateSystemDefaultDevice() {
       logger.info("Metal device: \(dev.name)")
     } else {
@@ -304,7 +301,7 @@ struct QwenImageCLIEntry {
       let hfHomePath = env["HF_HOME"].map { NSString(string: $0).expandingTildeInPath }
       let cacheOverridePath: String? = hfHomePath.map { $0 + "/hub" }
 
-      let snapshotRoot = try resolveSnapshot(
+      let snapshotRoot = try await resolveSnapshot(
         model: modelArg ?? "Qwen/Qwen-Image-Layered",
         revision: revision,
         cacheDirectory: cacheOverridePath,
@@ -313,7 +310,7 @@ struct QwenImageCLIEntry {
         useBackgroundSession: false
       )
 
-      try runLayeredGeneration(
+      try await runLayeredGeneration(
         imagePath: imagePath,
         snapshotRoot: snapshotRoot,
         outputPath: outputPath,
@@ -338,7 +335,7 @@ struct QwenImageCLIEntry {
       let env = ProcessInfo.processInfo.environment
       let hfHomePath = env["HF_HOME"].map { NSString(string: $0).expandingTildeInPath }
       let cacheOverridePath: String? = hfHomePath.map { $0 + "/hub" }
-      let resolvedSnapshot = try resolveSnapshot(
+      let resolvedSnapshot = try await resolveSnapshot(
         model: modelValue,
         revision: revision,
         cacheDirectory: cacheOverridePath,
@@ -366,7 +363,7 @@ struct QwenImageCLIEntry {
     let hfHomePath = env["HF_HOME"].map { NSString(string: $0).expandingTildeInPath }
     let cacheOverridePath: String? = hfHomePath.map { $0 + "/hub" }
 
-    let snapshotRoot = try resolveSnapshot(
+    let snapshotRoot = try await resolveSnapshot(
       model: modelArg,
       revision: revision,
       cacheDirectory: cacheOverridePath,
@@ -418,7 +415,7 @@ struct QwenImageCLIEntry {
     }
 
     if let lora = loraArg {
-      let loraURL = try resolveLoraSafetensors(
+      let loraURL = try await resolveLoraSafetensors(
         lora: lora,
         cacheDirectory: cacheOverridePath,
         hfToken: nil,
@@ -537,7 +534,7 @@ struct QwenImageCLIEntry {
     hfToken: String?,
     offlineMode: Bool,
     useBackgroundSession: Bool
-  ) throws -> URL {
+  ) async throws -> URL {
     if let model {
       let url = URL(fileURLWithPath: model).standardizedFileURL
       if FileManager.default.fileExists(atPath: url.path) {
@@ -553,7 +550,7 @@ struct QwenImageCLIEntry {
         useBackgroundSession: useBackgroundSession
       )
       logger.info("Resolving snapshot for \(model) (revision: \(revision))")
-      let snapshotURL = try downloadSnapshot(options: options)
+      let snapshotURL = try await downloadSnapshot(options: options)
       logger.info("Snapshot ready at \(snapshotURL.path)")
       return snapshotURL
     }
@@ -566,7 +563,7 @@ struct QwenImageCLIEntry {
     hfToken: String?,
     offlineMode: Bool,
     useBackgroundSession: Bool
-  ) throws -> URL {
+  ) async throws -> URL {
     let fm = FileManager.default
     let localURL = URL(fileURLWithPath: lora).standardizedFileURL
 
@@ -601,7 +598,7 @@ struct QwenImageCLIEntry {
       useBackgroundSession: useBackgroundSession
     )
     logger.info("Resolving LoRA snapshot for \(repoId) (revision: \(revision))")
-    let snapshotRoot = try downloadSnapshot(options: options)
+    let snapshotRoot = try await downloadSnapshot(options: options)
 
     var snapshotIsDir: ObjCBool = false
     if fm.fileExists(atPath: snapshotRoot.path, isDirectory: &snapshotIsDir) {
@@ -625,18 +622,20 @@ struct QwenImageCLIEntry {
       fail("LoRA file \(filePath) not found in snapshot at \(snapshotRoot.path)")
     }
 
-    let resourceKeys: [URLResourceKey] = [.isDirectoryKey]
-    if let enumerator = fm.enumerator(
-      at: snapshotRoot,
-      includingPropertiesForKeys: resourceKeys,
-      options: [.skipsHiddenFiles]
-    ) {
-      for case let url as URL in enumerator where url.pathExtension == "safetensors" {
-        return url
-      }
-    }
-    fail("No .safetensors file found in LoRA snapshot at \(snapshotRoot.path)")
-  }
+	    let resourceKeys: [URLResourceKey] = [.isDirectoryKey]
+	    if let enumerator = fm.enumerator(
+	      at: snapshotRoot,
+	      includingPropertiesForKeys: resourceKeys,
+	      options: [.skipsHiddenFiles]
+	    ) {
+	      while let url = enumerator.nextObject() as? URL {
+	        if url.pathExtension == "safetensors" {
+	          return url
+	        }
+	      }
+	    }
+	    fail("No .safetensors file found in LoRA snapshot at \(snapshotRoot.path)")
+	  }
 
   private static func findSafetensors(named fileName: String, in root: URL) -> URL? {
     let resourceKeys: [URLResourceKey] = [.isDirectoryKey]
@@ -657,40 +656,15 @@ struct QwenImageCLIEntry {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
   }
 
-  private static func downloadSnapshot(options: HubSnapshotOptions) throws -> URL {
+  private static func downloadSnapshot(options: HubSnapshotOptions) async throws -> URL {
     let snapshot = try HubSnapshot(options: options)
-    let progressFlag = MutableBox(false)
-    let url = try blockingAwait {
-      try await snapshot.prepare { progress in
-        guard progress.totalUnitCount > 0 else { return }
-        progressFlag.value = true
-        Self.printDownloadProgress(progress)
-      }
+    let url = try await snapshot.prepare { progress in
+      guard progress.totalUnitCount > 0 else { return }
+      Self.printDownloadProgress(progress)
     }
-    if progressFlag.value {
-      let data = Data("\n".utf8)
-      try? FileHandle.standardError.write(contentsOf: data)
-    }
+    let data = Data("\n".utf8)
+    try? FileHandle.standardError.write(contentsOf: data)
     return url
-  }
-
-  private static func blockingAwait<T>(_ operation: @escaping () async throws -> T) throws -> T {
-    let semaphore = DispatchSemaphore(value: 0)
-    let resultBox = MutableBox<Result<T, Error>?>(nil)
-    Task {
-      do {
-        let value = try await operation()
-        resultBox.value = .success(value)
-      } catch {
-        resultBox.value = .failure(error)
-      }
-      semaphore.signal()
-    }
-    semaphore.wait()
-    guard let result = resultBox.value else {
-      fatalError("Snapshot task completed without a result.")
-    }
-    return try result.get()
   }
 
   private static func printDownloadProgress(_ progress: HubSnapshotProgress) {
@@ -725,12 +699,6 @@ struct QwenImageCLIEntry {
     return "\(formatByteCount(count))/s"
   }
 
-  private final class MutableBox<Value>: @unchecked Sendable {
-    var value: Value
-    init(_ value: Value) {
-      self.value = value
-    }
-  }
 
   private static func save(image: PipelineImage, to url: URL) throws {
 #if canImport(AppKit)
@@ -865,15 +833,13 @@ struct QwenImageCLIEntry {
     seed: UInt64?,
     loraPath: String?,
     progressEnabled: Bool
-  ) throws {
-#if canImport(CoreGraphics)
-    logger.info("Loading layered pipeline from \(snapshotRoot.path)")
-    let pipeline = try blockingAwait {
-      try await QwenLayeredPipeline.load(from: snapshotRoot)
-    }
+  ) async throws {
+	#if canImport(CoreGraphics)
+	    logger.info("Loading layered pipeline from \(snapshotRoot.path)")
+	    let pipeline = try QwenLayeredPipeline.load(from: snapshotRoot)
 
     if let loraPath = loraPath {
-      let loraURL = try resolveLoraSafetensors(
+      let loraURL = try await resolveLoraSafetensors(
         lora: loraPath,
         cacheDirectory: nil,
         hfToken: nil,
@@ -1129,9 +1095,15 @@ struct QwenImageCLIEntry {
   }
 }
 
-do {
-  try QwenImageCLIEntry.run()
-} catch {
-  QwenImageCLIEntry.logger.error("Unhandled error: \(error)")
-  exit(1)
+@main
+enum QwenImageCLI {
+  static func main() async {
+    bootstrapLogging()
+    do {
+      try await QwenImageCLIEntry.run()
+    } catch {
+      QwenImageCLIEntry.logger.error("Unhandled error: \(error)")
+      exit(1)
+    }
+  }
 }
